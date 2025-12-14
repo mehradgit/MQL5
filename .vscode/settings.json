@@ -1,0 +1,13 @@
+{
+    "mql.metaeditorPath": "C:\\Program Files\\MetaTrader 5\\metaeditor64.exe",
+    "mql.includePath": "C:\\Users\\Administrator\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5\\Include",
+    "mql.projectPath": "C:\\Users\\Administrator\\AppData\\Roaming\\MetaQuotes\\Terminal\\D0E8209F77C8CF37AD8BF550E51FF075\\MQL5",
+    "files.associations": {
+        "*.mq4": "cpp",
+        "*.mq5": "cpp",
+        "*.mqh": "cpp"
+    },
+    "C_Cpp.default.forcedInclude": [
+        "c:\\Users\\Administrator\\.vscode\\extensions\\l-i-v.mql-tools-2.2.0\\data\\mql5_en.mqh"
+    ]
+}
