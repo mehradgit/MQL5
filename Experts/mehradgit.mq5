@@ -1,17 +1,20 @@
 //+------------------------------------------------------------------+
 //| SignalExecutor.mq5                                               |
 //| Expert Advisor: Signal Execution from JSON File                 |
-//| Version: 1.86 (Enhanced Execution Logic)                        |
+//| Version: 1.95 (Enhanced Risk Management with Retry Logic)       |
 //+------------------------------------------------------------------+
 #property copyright "Generated for mehradgit"
-#property version "1.86"
+#property version "1.95"
 #property strict
 
 #include <Trade\Trade.mqh>
+#include <DashboardUploader.mqh>
 
 // ================ INPUT PARAMETERS ================
 
 input group "General Settings" input int PollIntervalSeconds = 2; // Poll Interval (seconds)
+input int DashboardRefreshRate = 10;                              // Dashboard Update (seconds)
+input bool AutoOpenDashboard = false;                             // Auto-open Dashboard
 input string SignalFileName = "output";                           // Filename
 input string DefaultSymbol = "XAUUSD";                            // Default Symbol
 input bool EnableLogging = true;                                  // Enable Journal Logging
@@ -38,6 +41,12 @@ input double DefaultStopPips_NAS = 400;                                         
 input double DefaultTpForOpenPips_NAS = 400;                                                // Default TP for NASDAQ (pips)
 input int MaxSlippageForMarketPips_NAS = 150;                                               // Max slippage for NASDAQ
 input int PendingOrderDistanceFromSL_NAS = 400;                                             // Pending distance for NASDAQ
+
+input group "Execution Settings - BITCOIN (BTCUSD, BTC)" input double MaxLotSize_BTC = 1.0; // Max lot size for Bitcoin
+input double DefaultStopPips_BTC = 500;                                                     // Default SL for Bitcoin (pips)
+input double DefaultTpForOpenPips_BTC = 500;                                                // Default TP for Bitcoin (pips)
+input int MaxSlippageForMarketPips_BTC = 200;                                               // Max slippage for Bitcoin
+input int PendingOrderDistanceFromSL_BTC = 500;                                             // Pending distance for Bitcoin
 
 input group "Execution Settings - OTHER PAIRS (EURUSD, GBPUSD, etc)" input double MaxLotSize_FOREX = 10.0; // Max lot size for FOREX
 input double DefaultStopPips_FOREX = 100;                                                                  // Default SL for FOREX (pips)
@@ -82,6 +91,18 @@ input int Nas_TrailingStopPips = 20;
 input int Nas_GlobalRiskFreePips = 60;
 input int Nas_RiskFreeDistance = 20;
 input int Nas_ClosePendingAtProfit = 30;
+
+input group "Risk Management Stages - BITCOIN" input int Btc_Stage1_Pips = 100; // Bitcoin has larger moves
+input double Btc_Stage1_ClosePercent = 10.0;
+input int Btc_Stage2_Pips = 200;
+input double Btc_Stage2_ClosePercent = 15.0;
+input int Btc_Stage2_BreakEvenPips = 50;
+input int Btc_Stage3_Pips = 300;
+input double Btc_Stage3_ClosePercent = 20.0;
+input int Btc_TrailingStopPips = 50;
+input int Btc_GlobalRiskFreePips = 400;
+input int Btc_RiskFreeDistance = 100;
+input int Btc_ClosePendingAtProfit = 150;
 
 input group "Risk Management Stages - FOREX" input int Forex_Stage1_Pips = 8;
 input double Forex_Stage1_ClosePercent = 10.0;
@@ -141,7 +162,18 @@ input double Nas_BuyPendingSL_AdjustPips = 0.0;                                 
 input double Nas_SellPendingTP_AdjustPips = 0.0;                                                  // Sell Pending TP adjustment (pips)
 input double Nas_SellPendingSL_AdjustPips = 0.0;                                                  // Sell Pending SL adjustment (pips)
 
-// گروه 4: تنظیمات FOREX (EURUSD, GBPUSD, etc)
+// گروه 4: تنظیمات BITCOIN (BTCUSD, BTC)
+input group "TP/SL Adjustment - BITCOIN (MARKET)" input double Btc_BuyMarketTP_AdjustPips = 0.0; // Buy Market TP adjustment (pips)
+input double Btc_BuyMarketSL_AdjustPips = 0.0;                                                   // Buy Market SL adjustment (pips)
+input double Btc_SellMarketTP_AdjustPips = 0.0;                                                  // Sell Market TP adjustment (pips)
+input double Btc_SellMarketSL_AdjustPips = 0.0;                                                  // Sell Market SL adjustment (pips)
+
+input group "TP/SL Adjustment - BITCOIN (PENDING)" input double Btc_BuyPendingTP_AdjustPips = 0.0; // Buy Pending TP adjustment (pips)
+input double Btc_BuyPendingSL_AdjustPips = 0.0;                                                    // Buy Pending SL adjustment (pips)
+input double Btc_SellPendingTP_AdjustPips = 0.0;                                                   // Sell Pending TP adjustment (pips)
+input double Btc_SellPendingSL_AdjustPips = 0.0;                                                   // Sell Pending SL adjustment (pips)
+
+// گروه 5: تنظیمات FOREX (EURUSD, GBPUSD, etc)
 input group "TP/SL Adjustment - FOREX (MARKET)" input double Forex_BuyMarketTP_AdjustPips = 0.0; // Buy Market TP adjustment (pips)
 input double Forex_BuyMarketSL_AdjustPips = 0.0;                                                 // Buy Market SL adjustment (pips)
 input double Forex_SellMarketTP_AdjustPips = 0.0;                                                // Sell Market TP adjustment (pips)
@@ -152,15 +184,22 @@ input double Forex_BuyPendingSL_AdjustPips = 0.0;                               
 input double Forex_SellPendingTP_AdjustPips = 0.0;                                                 // Sell Pending TP adjustment (pips)
 input double Forex_SellPendingSL_AdjustPips = 0.0;                                                 // Sell Pending SL adjustment (pips)
 
+// ================ RETRY SETTINGS ================
+
+input group "Retry Settings" input int MaxRetryAttempts_Stage1 = 15; // افزایش از ۵ به ۱۵
+input int MaxRetryAttempts_Stage2 = 15;                              // افزایش از ۵ به ۱۵
+input int MaxRetryAttempts_Stage3 = 15;                              // افزایش از ۵ به ۱۵
+input int RetryDelaySeconds = 45;                                    // افزایش از ۱۰ به ۴۵ ثانیه
 // ================ STRUCTURES AND ENUMS ================
 
 enum ENUM_SYMBOL_TYPE
 {
-  SYMBOL_TYPE_GOLD,   // 0: Gold
-  SYMBOL_TYPE_DOW,    // 1: Dow Jones
-  SYMBOL_TYPE_NASDAQ, // 2: Nasdaq
-  SYMBOL_TYPE_FOREX,  // 3: Forex pairs
-  SYMBOL_TYPE_UNKNOWN // 4: Unknown
+  SYMBOL_TYPE_GOLD,    // 0: Gold
+  SYMBOL_TYPE_DOW,     // 1: Dow Jones
+  SYMBOL_TYPE_NASDAQ,  // 2: Nasdaq
+  SYMBOL_TYPE_BITCOIN, // 3: Bitcoin
+  SYMBOL_TYPE_FOREX,   // 4: Forex pairs
+  SYMBOL_TYPE_UNKNOWN  // 5: Unknown
 };
 
 struct SymbolSettings
@@ -185,6 +224,8 @@ struct SymbolSettings
   int close_pending_at_profit;
 };
 
+// ================ STRUCTURES ================
+
 struct PositionRiskData
 {
   ulong ticket;
@@ -195,9 +236,15 @@ struct PositionRiskData
   double current_sl;
   int stage_completed; // 0=none, 1=stage1, 2=stage2, 3=stage3
   bool risk_free_active;
-  double best_price; // For trailing stop
+  double best_price;
   datetime last_check;
-  bool pending_closed; // Track if pending orders already closed
+  bool pending_closed;
+
+  // New fields for retry logic
+  bool stage_in_progress[4];    // [0] unused, [1] stage1, [2] stage2, [3] stage3
+  datetime stage_start_time[4]; // Start time for each stage attempt
+  int stage_attempt_count[4];   // Attempt count for each stage
+  int stage_max_attempts[4];    // Maximum attempts for each stage (از اینپوت‌ها پر می‌شود)
 };
 
 struct SignalData
@@ -221,7 +268,8 @@ CTrade trade;
 bool g_initialized = false;
 datetime last_history_check = 0;
 datetime last_risk_check = 0;
-SymbolSettings gold_settings, dow_settings, nas_settings, forex_settings;
+datetime last_dashboard_update = 0;
+SymbolSettings gold_settings, dow_settings, nas_settings, btc_settings, forex_settings;
 PositionRiskData risk_data_array[100];
 int risk_data_count = 0;
 
@@ -238,12 +286,15 @@ void ClosePendingOrdersForSignal(string signalID, string reason);
 void InitializeRiskDataForPosition(ulong ticket, string signalID, double entryPrice, double slPrice, double tpPrice);
 void UpdateRiskDataForPosition(ulong ticket, double currentPrice);
 void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType);
-void ClosePartialPosition(ulong ticket, double percent, string reason);
+bool ClosePartialPosition(ulong ticket, double percent, string reason);
 void MoveToBreakEven(ulong ticket, double entryPrice, int breakEvenPips, bool isBuy, string symbol);
 void ApplyTrailingStop(ulong ticket, double currentPrice, int trailingPips, bool isBuy, string symbol);
 void ApplyGlobalRiskFree(ulong ticket, double entryPrice, int riskFreePips, int riskFreeDistance, bool isBuy, string symbol);
 SymbolSettings GetRiskManagementSettings(ENUM_SYMBOL_TYPE symType);
 void InitializeRiskManagementSettings();
+void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profitPips, double closePercent,
+                           string reason, string symbol, bool isBuy, double currentPrice, double entryPrice,
+                           string signalID, ENUM_SYMBOL_TYPE symType);
 
 // JSON Processing
 bool ParseJsonContent(string content, SignalData &out);
@@ -274,8 +325,10 @@ bool SendTelegramFarsi(string message);
 bool CheckTelegramSettings();
 void SendExecutionReport(string signalID, string symbol, string orderType, int totalOrders, int successfulOrders,
                          double totalVolume, bool singleOrderMode, bool pendingMode, double pendingPrice, ENUM_SYMBOL_TYPE symType);
-void SendRiskManagementAlert(string symbol, string signalID, int stage, string action, double profitPips);
+void SendRiskManagementAlert(string symbol, string signalID, int stage, string action, double profitPips, double closedPercent);
 void SendSignalAlert(string signalID, string symbol, string message);
+void SendStageAttemptAlert(string symbol, string signalID, int stage, int attempt, double profitPips, string status);
+void SendStageRetryAlert(string symbol, string signalID, int stage, int attempt, double profitPips);
 
 // Helper Functions
 void PrintLog(string message);
@@ -287,6 +340,19 @@ double NormalizeLotToSymbol(double lot, string symbol);
 double CalculatePipsProfit(double entryPrice, double currentPrice, bool isBuy, string symbol, ENUM_SYMBOL_TYPE symType);
 int CountOpenPositionsForSignal(string signalID);
 int CountPendingOrdersForSignal(string signalID);
+double CalculatePositionRiskMoney(ulong ticket);
+double CalculateTotalOpenPositionsRiskMoney();
+double CalculateTotalRiskPercentage();
+bool CheckGlobalRiskLimit(double signalRiskMoney);
+double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder, bool isPendingOrder);
+double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder, bool isPendingOrder);
+double AdjustPriceWithPips(double originalPrice, double adjustPips, string symbol,
+                           ENUM_SYMBOL_TYPE symType, bool isBuy, bool isTP);
+double AdjustTPPrice(double originalTP, string symbol, ENUM_SYMBOL_TYPE symType,
+                     string orderType, bool isMarketOrder, bool isPendingOrder);
+double AdjustSLPrice(double originalSL, string symbol, ENUM_SYMBOL_TYPE symType,
+                     string orderType, bool isMarketOrder, bool isPendingOrder);
+void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType);
 
 // ================ MAIN FUNCTIONS ================
 
@@ -306,17 +372,29 @@ int OnInit()
   InitializeSymbolSettings();
   InitializeRiskManagementSettings();
 
-  PrintLog("SignalExecutor v1.85 with Enhanced Execution Logic initialized.");
+  PrintLog("SignalExecutor v1.90 with Enhanced Risk Management initialized.");
+  PrintLog("Retry Settings:");
+  PrintLog("  Stage 1 Max Attempts: " + IntegerToString(MaxRetryAttempts_Stage1));
+  PrintLog("  Stage 2 Max Attempts: " + IntegerToString(MaxRetryAttempts_Stage2));
+  PrintLog("  Stage 3 Max Attempts: " + IntegerToString(MaxRetryAttempts_Stage3));
+  PrintLog("  Retry Delay: " + IntegerToString(RetryDelaySeconds) + " seconds");
+
+  // ایجاد داشبورد اولیه
+  CheckDashboardUpload();
 
   if (EnableTelegram)
   {
     if (!CheckTelegramSettings())
       PrintLog("Warning: Telegram settings invalid.");
     else
-      SendTelegramFarsi("🤖 *SignalExecutor v1.85 Started*\n" +
+      SendTelegramFarsi("🤖 *SignalExecutor v1.90 Started*\n" +
                         "Symbol: " + DefaultSymbol + "\n" +
-                        "Risk Management: ACTIVE\n" +
-                        "Close Pending on Profit: " + (ClosePendingOnProfit ? "YES" : "NO") + "\n" +
+                        "Risk Management: ACTIVE with Retry Logic\n" +
+                        "Retry Settings:\n" +
+                        "  Stage 1: " + IntegerToString(MaxRetryAttempts_Stage1) + " attempts\n" +
+                        "  Stage 2: " + IntegerToString(MaxRetryAttempts_Stage2) + " attempts\n" +
+                        "  Stage 3: " + IntegerToString(MaxRetryAttempts_Stage3) + " attempts\n" +
+                        "  Delay: " + IntegerToString(RetryDelaySeconds) + "s\n" +
                         "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS));
   }
 
@@ -344,6 +422,7 @@ void OnTimer()
 {
   ProcessSignalFile();
   ManageOpenPositions();
+
   // مانیتور ریسک کلی (هر 30 ثانیه)
   static datetime lastRiskMonitor = 0;
   if (TimeCurrent() - lastRiskMonitor >= 30)
@@ -351,22 +430,24 @@ void OnTimer()
     if (EnableGlobalRiskLimit)
     {
       double currentRiskPercent = CalculateTotalRiskPercentage();
-      if (currentRiskPercent > MaxTotalRiskPercent * 0.8) // اگر بیش از 80% حد مجاز
+      if (currentRiskPercent > MaxTotalRiskPercent * 0.8)
       {
         PrintLog("⚠️ WARNING: Total risk approaching limit: " +
                  DoubleToString(currentRiskPercent, 1) + "%");
-
-        if (EnableTelegram && currentRiskPercent > MaxTotalRiskPercent * 0.9)
-        {
-          SendTelegramFarsi("⚠️ *Risk Warning*\n" +
-                            "Total risk: " + DoubleToString(currentRiskPercent, 1) + "%\n" +
-                            "Limit: " + DoubleToString(MaxTotalRiskPercent, 1) + "%\n" +
-                            "Approaching maximum limit!");
-        }
       }
     }
     lastRiskMonitor = TimeCurrent();
   }
+  // آپدیت داشبورد هر 10 ثانیه
+  if (TimeCurrent() - last_dashboard_update >= DashboardRefreshRate)
+  {
+    CreateHtmlDashboard();
+    last_dashboard_update = TimeCurrent();
+
+    // آپلود داشبورد به سرور
+    CheckDashboardUpload();
+  }
+
   // Check risk management at specified interval
   if (EnableRiskManagement && (TimeCurrent() - last_risk_check >= RiskCheckInterval))
   {
@@ -375,589 +456,1172 @@ void OnTimer()
   }
 }
 
+// ================ RISK MANAGEMENT FUNCTIONS ================
+
 //+------------------------------------------------------------------+
-//| Main Processing Function                                         |
+//| Initialize Risk Management Settings                              |
 //+------------------------------------------------------------------+
-void ProcessSignalFile()
+void InitializeRiskManagementSettings()
 {
-  string file1 = SignalFileName + ".txt";
-  string file2 = SignalFileName;
+  // Gold settings
+  gold_settings.stage1_pips = Gold_Stage1_Pips;
+  gold_settings.stage1_close_percent = Gold_Stage1_ClosePercent;
+  gold_settings.stage2_pips = Gold_Stage2_Pips;
+  gold_settings.stage2_close_percent = Gold_Stage2_ClosePercent;
+  gold_settings.stage2_breakeven_pips = Gold_Stage2_BreakEvenPips;
+  gold_settings.stage3_pips = Gold_Stage3_Pips;
+  gold_settings.stage3_close_percent = Gold_Stage3_ClosePercent;
+  gold_settings.trailing_stop_pips = Gold_TrailingStopPips;
+  gold_settings.global_riskfree_pips = Gold_GlobalRiskFreePips;
+  gold_settings.riskfree_distance = Gold_RiskFreeDistance;
+  gold_settings.close_pending_at_profit = Gold_ClosePendingAtProfit;
 
-  int handle = INVALID_HANDLE;
-  handle = FileOpen(file1, FILE_READ | FILE_TXT | FILE_ANSI);
-  if (handle == INVALID_HANDLE)
+  // Dow Jones settings
+  dow_settings.stage1_pips = Dow_Stage1_Pips;
+  dow_settings.stage1_close_percent = Dow_Stage1_ClosePercent;
+  dow_settings.stage2_pips = Dow_Stage2_Pips;
+  dow_settings.stage2_close_percent = Dow_Stage2_ClosePercent;
+  dow_settings.stage2_breakeven_pips = Dow_Stage2_BreakEvenPips;
+  dow_settings.stage3_pips = Dow_Stage3_Pips;
+  dow_settings.stage3_close_percent = Dow_Stage3_ClosePercent;
+  dow_settings.trailing_stop_pips = Dow_TrailingStopPips;
+  dow_settings.global_riskfree_pips = Dow_GlobalRiskFreePips;
+  dow_settings.riskfree_distance = Dow_RiskFreeDistance;
+  dow_settings.close_pending_at_profit = Dow_ClosePendingAtProfit;
+
+  // NASDAQ settings
+  nas_settings.stage1_pips = Nas_Stage1_Pips;
+  nas_settings.stage1_close_percent = Nas_Stage1_ClosePercent;
+  nas_settings.stage2_pips = Nas_Stage2_Pips;
+  nas_settings.stage2_close_percent = Nas_Stage2_ClosePercent;
+  nas_settings.stage2_breakeven_pips = Nas_Stage2_BreakEvenPips;
+  nas_settings.stage3_pips = Nas_Stage3_Pips;
+  nas_settings.stage3_close_percent = Nas_Stage3_ClosePercent;
+  nas_settings.trailing_stop_pips = Nas_TrailingStopPips;
+  nas_settings.global_riskfree_pips = Nas_GlobalRiskFreePips;
+  nas_settings.riskfree_distance = Nas_RiskFreeDistance;
+  nas_settings.close_pending_at_profit = Nas_ClosePendingAtProfit;
+
+  // Bitcoin settings
+  btc_settings.stage1_pips = Btc_Stage1_Pips;
+  btc_settings.stage1_close_percent = Btc_Stage1_ClosePercent;
+  btc_settings.stage2_pips = Btc_Stage2_Pips;
+  btc_settings.stage2_close_percent = Btc_Stage2_ClosePercent;
+  btc_settings.stage2_breakeven_pips = Btc_Stage2_BreakEvenPips;
+  btc_settings.stage3_pips = Btc_Stage3_Pips;
+  btc_settings.stage3_close_percent = Btc_Stage3_ClosePercent;
+  btc_settings.trailing_stop_pips = Btc_TrailingStopPips;
+  btc_settings.global_riskfree_pips = Btc_GlobalRiskFreePips;
+  btc_settings.riskfree_distance = Btc_RiskFreeDistance;
+  btc_settings.close_pending_at_profit = Btc_ClosePendingAtProfit;
+
+  // Forex settings
+  forex_settings.stage1_pips = Forex_Stage1_Pips;
+  forex_settings.stage1_close_percent = Forex_Stage1_ClosePercent;
+  forex_settings.stage2_pips = Forex_Stage2_Pips;
+  forex_settings.stage2_close_percent = Forex_Stage2_ClosePercent;
+  forex_settings.stage2_breakeven_pips = Forex_Stage2_BreakEvenPips;
+  forex_settings.stage3_pips = Forex_Stage3_Pips;
+  forex_settings.stage3_close_percent = Forex_Stage3_ClosePercent;
+  forex_settings.trailing_stop_pips = Forex_TrailingStopPips;
+  forex_settings.global_riskfree_pips = Forex_GlobalRiskFreePips;
+  forex_settings.riskfree_distance = Forex_RiskFreeDistance;
+  forex_settings.close_pending_at_profit = Forex_ClosePendingAtProfit;
+}
+
+//+------------------------------------------------------------------+
+//| Get Risk Management Settings                                     |
+//+------------------------------------------------------------------+
+SymbolSettings GetRiskManagementSettings(ENUM_SYMBOL_TYPE symType)
+{
+  SymbolSettings settings;
+
+  switch (symType)
   {
-    handle = FileOpen(file2, FILE_READ | FILE_TXT | FILE_ANSI);
-    if (handle == INVALID_HANDLE)
-      return;
+  case SYMBOL_TYPE_GOLD:
+    settings.max_lot = gold_settings.max_lot;
+    settings.default_sl_pips = gold_settings.default_sl_pips;
+    settings.default_tp_pips = gold_settings.default_tp_pips;
+    settings.max_slippage_pips = gold_settings.max_slippage_pips;
+    settings.pending_distance_pips = gold_settings.pending_distance_pips;
+    settings.stage1_pips = gold_settings.stage1_pips;
+    settings.stage1_close_percent = gold_settings.stage1_close_percent;
+    settings.stage2_pips = gold_settings.stage2_pips;
+    settings.stage2_close_percent = gold_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = gold_settings.stage2_breakeven_pips;
+    settings.stage3_pips = gold_settings.stage3_pips;
+    settings.stage3_close_percent = gold_settings.stage3_close_percent;
+    settings.trailing_stop_pips = gold_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = gold_settings.global_riskfree_pips;
+    settings.riskfree_distance = gold_settings.riskfree_distance;
+    settings.close_pending_at_profit = gold_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_DOW:
+    settings.max_lot = dow_settings.max_lot;
+    settings.default_sl_pips = dow_settings.default_sl_pips;
+    settings.default_tp_pips = dow_settings.default_tp_pips;
+    settings.max_slippage_pips = dow_settings.max_slippage_pips;
+    settings.pending_distance_pips = dow_settings.pending_distance_pips;
+    settings.stage1_pips = dow_settings.stage1_pips;
+    settings.stage1_close_percent = dow_settings.stage1_close_percent;
+    settings.stage2_pips = dow_settings.stage2_pips;
+    settings.stage2_close_percent = dow_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = dow_settings.stage2_breakeven_pips;
+    settings.stage3_pips = dow_settings.stage3_pips;
+    settings.stage3_close_percent = dow_settings.stage3_close_percent;
+    settings.trailing_stop_pips = dow_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = dow_settings.global_riskfree_pips;
+    settings.riskfree_distance = dow_settings.riskfree_distance;
+    settings.close_pending_at_profit = dow_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_NASDAQ:
+    settings.max_lot = nas_settings.max_lot;
+    settings.default_sl_pips = nas_settings.default_sl_pips;
+    settings.default_tp_pips = nas_settings.default_tp_pips;
+    settings.max_slippage_pips = nas_settings.max_slippage_pips;
+    settings.pending_distance_pips = nas_settings.pending_distance_pips;
+    settings.stage1_pips = nas_settings.stage1_pips;
+    settings.stage1_close_percent = nas_settings.stage1_close_percent;
+    settings.stage2_pips = nas_settings.stage2_pips;
+    settings.stage2_close_percent = nas_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = nas_settings.stage2_breakeven_pips;
+    settings.stage3_pips = nas_settings.stage3_pips;
+    settings.stage3_close_percent = nas_settings.stage3_close_percent;
+    settings.trailing_stop_pips = nas_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = nas_settings.global_riskfree_pips;
+    settings.riskfree_distance = nas_settings.riskfree_distance;
+    settings.close_pending_at_profit = nas_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_BITCOIN:
+    settings.max_lot = btc_settings.max_lot;
+    settings.default_sl_pips = btc_settings.default_sl_pips;
+    settings.default_tp_pips = btc_settings.default_tp_pips;
+    settings.max_slippage_pips = btc_settings.max_slippage_pips;
+    settings.pending_distance_pips = btc_settings.pending_distance_pips;
+    settings.stage1_pips = btc_settings.stage1_pips;
+    settings.stage1_close_percent = btc_settings.stage1_close_percent;
+    settings.stage2_pips = btc_settings.stage2_pips;
+    settings.stage2_close_percent = btc_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = btc_settings.stage2_breakeven_pips;
+    settings.stage3_pips = btc_settings.stage3_pips;
+    settings.stage3_close_percent = btc_settings.stage3_close_percent;
+    settings.trailing_stop_pips = btc_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = btc_settings.global_riskfree_pips;
+    settings.riskfree_distance = btc_settings.riskfree_distance;
+    settings.close_pending_at_profit = btc_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_FOREX:
+  default:
+    settings.max_lot = forex_settings.max_lot;
+    settings.default_sl_pips = forex_settings.default_sl_pips;
+    settings.default_tp_pips = forex_settings.default_tp_pips;
+    settings.max_slippage_pips = forex_settings.max_slippage_pips;
+    settings.pending_distance_pips = forex_settings.pending_distance_pips;
+    settings.stage1_pips = forex_settings.stage1_pips;
+    settings.stage1_close_percent = forex_settings.stage1_close_percent;
+    settings.stage2_pips = forex_settings.stage2_pips;
+    settings.stage2_close_percent = forex_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = forex_settings.stage2_breakeven_pips;
+    settings.stage3_pips = forex_settings.stage3_pips;
+    settings.stage3_close_percent = forex_settings.stage3_close_percent;
+    settings.trailing_stop_pips = forex_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = forex_settings.global_riskfree_pips;
+    settings.riskfree_distance = forex_settings.riskfree_distance;
+    settings.close_pending_at_profit = forex_settings.close_pending_at_profit;
+    break;
   }
 
-  string content = "";
-  while (!FileIsEnding(handle))
+  return settings;
+}
+
+// ================ INITIALIZATION ================
+
+//+------------------------------------------------------------------+
+//| Initialize Risk Data for New Position                           |
+//+------------------------------------------------------------------+
+void InitializeRiskDataForPosition(ulong ticket, string signalID, double entryPrice, double slPrice, double tpPrice)
+{
+  // Check if already exists
+  for (int i = 0; i < risk_data_count; i++)
   {
-    string line = FileReadString(handle);
-    content = content + line;
-  }
-  FileClose(handle);
-
-  FileDelete(file1);
-  FileDelete(file2);
-
-  content = NormalizeContentLines(content);
-  content = StringTrimCustom(content);
-
-  if (StringLen(content) < 5)
-    return;
-
-  PrintLog("Read Content: " + StringSubstr(content, 0, MathMin(100, StringLen(content))) + "...");
-
-  SignalData sig;
-  if (!ParseJsonContent(content, sig))
-  {
-    PrintLog("Failed to parse JSON content.");
-    return;
-  }
-
-  // Validate parsed data
-  PrintLog("Parsed Data Summary:");
-  PrintLog("  Prices count: " + IntegerToString(sig.prices_count));
-  PrintLog("  TP count: " + IntegerToString(sig.tp_count));
-  PrintLog("  SL count: " + IntegerToString(sig.sl_count));
-  if (sig.prices_count == 0)
-  {
-    PrintLog("ERROR: No prices parsed from JSON!");
-    return;
-  }
-
-  // If no TPs, add a default
-  if (sig.tp_count == 0)
-  {
-    PrintLog("WARNING: No TPs found, adding default TP");
-    sig.tp_count = 1;
-    ArrayResize(sig.tp_list, 1);
-    sig.tp_list[0] = 0; // Will be calculated later
-  }
-  if (StringLen(sig.order_type) == 0)
-    return;
-
-  string symbol = sig.currency;
-  if (StringLen(symbol) == 0 || symbol == "null")
-    symbol = DefaultSymbol;
-  StringReplace(symbol, "\"", "");
-  StringReplace(symbol, "'", "");
-  symbol = StringTrimCustom(symbol);
-
-  if (!SymbolSelect(symbol, true))
-  {
-    PrintLog("Symbol " + symbol + " not found. Using default: " + DefaultSymbol);
-    symbol = DefaultSymbol;
-    SymbolSelect(symbol, true);
-  }
-
-  if (StringLen(sig.signal_id) == 0)
-  {
-    long currentTime = (long)TimeCurrent(); // تبدیل صریح برای جلوگیری از هشدار
-    sig.signal_id = IntegerToString(currentTime);
-  }
-
-  PrintLog("Processing Signal ID: " + sig.signal_id + " on " + symbol);
-
-  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
-
-  // ارسال گزارش سیگنال ورودی به تلگرام - بعد از تعریف symbol و symType
-  if (EnableTelegram)
-  {
-    SendSignalEntryReport(sig, symbol, symType);
-  }
-
-  SymbolSettings settings = GetSymbolSettings(symType);
-
-  double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-  double totalRiskMoney = accountBalance * RiskPercentPerSignal / 100.0;
-
-  // اضافه کردن چک ریسک کلی:
-  if (EnableGlobalRiskLimit)
-  {
-    if (!CheckGlobalRiskLimit(totalRiskMoney))
+    if (risk_data_array[i].ticket == ticket)
     {
-      PrintLog("Signal execution CANCELLED due to global risk limit");
-      return; // سیگنال اجرا نمی‌شود
+      risk_data_array[i].entry_price = entryPrice;
+      risk_data_array[i].original_sl = slPrice;
+      risk_data_array[i].original_tp = tpPrice;
+      risk_data_array[i].current_sl = slPrice;
+      risk_data_array[i].stage_completed = 0;
+      risk_data_array[i].risk_free_active = false;
+      risk_data_array[i].best_price = entryPrice;
+      risk_data_array[i].last_check = TimeCurrent();
+      risk_data_array[i].pending_closed = false;
+
+      // Reset stage progress
+      for (int s = 0; s < 4; s++)
+      {
+        risk_data_array[i].stage_in_progress[s] = false;
+        risk_data_array[i].stage_start_time[s] = 0;
+        risk_data_array[i].stage_attempt_count[s] = 0;
+        // Set max attempts based on stage
+        if (s == 1)
+          risk_data_array[i].stage_max_attempts[s] = MaxRetryAttempts_Stage1;
+        else if (s == 2)
+          risk_data_array[i].stage_max_attempts[s] = MaxRetryAttempts_Stage2;
+        else if (s == 3)
+          risk_data_array[i].stage_max_attempts[s] = MaxRetryAttempts_Stage3;
+        else
+          risk_data_array[i].stage_max_attempts[s] = 5; // default
+      }
+      return;
     }
   }
 
-  if (sig.prices_count == 0)
+  // Add new entry if there's space
+  if (risk_data_count < ArraySize(risk_data_array))
   {
-    ArrayResize(sig.prices_list, 1);
-    ArrayResize(sig.prices_isMarket, 1);
-    sig.prices_list[0] = 0.0;
-    sig.prices_isMarket[0] = true;
-    sig.prices_count = 1;
+    risk_data_array[risk_data_count].ticket = ticket;
+    risk_data_array[risk_data_count].signal_id = signalID;
+    risk_data_array[risk_data_count].entry_price = entryPrice;
+    risk_data_array[risk_data_count].original_sl = slPrice;
+    risk_data_array[risk_data_count].original_tp = tpPrice;
+    risk_data_array[risk_data_count].current_sl = slPrice;
+    risk_data_array[risk_data_count].stage_completed = 0;
+    risk_data_array[risk_data_count].risk_free_active = false;
+    risk_data_array[risk_data_count].best_price = entryPrice;
+    risk_data_array[risk_data_count].last_check = TimeCurrent();
+    risk_data_array[risk_data_count].pending_closed = false;
+
+    // Initialize stage progress arrays
+    for (int s = 0; s < 4; s++)
+    {
+      risk_data_array[risk_data_count].stage_in_progress[s] = false;
+      risk_data_array[risk_data_count].stage_start_time[s] = 0;
+      risk_data_array[risk_data_count].stage_attempt_count[s] = 0;
+      // Set max attempts based on stage
+      if (s == 1)
+        risk_data_array[risk_data_count].stage_max_attempts[s] = MaxRetryAttempts_Stage1;
+      else if (s == 2)
+        risk_data_array[risk_data_count].stage_max_attempts[s] = MaxRetryAttempts_Stage2;
+      else if (s == 3)
+        risk_data_array[risk_data_count].stage_max_attempts[s] = MaxRetryAttempts_Stage3;
+      else
+        risk_data_array[risk_data_count].stage_max_attempts[s] = 5; // default
+    }
+
+    risk_data_count++;
+    PrintLog("Risk data initialized for ticket: " + (string)ticket + " Signal: " + signalID);
   }
-
-  int successCount = 0;
-  double totalExecutedVolume = 0;
-
-  // Process signal with smart logic
-  ProcessSignalWithSmartLogic(sig, symbol, symType, settings, totalRiskMoney, sig.signal_id, successCount, totalExecutedVolume);
-
-  if (EnableTelegram && successCount > 0)
+  else
   {
-    SendExecutionReport(sig.signal_id, symbol, sig.order_type, sig.tp_count, successCount,
-                        totalExecutedVolume, false, false, 0, symType);
+    PrintLog("Warning: Risk data array is full. Cannot add ticket: " + (string)ticket);
   }
 }
 
-// ================ ENHANCED EXECUTION LOGIC ================
-
 //+------------------------------------------------------------------+
-//| Process Signal with Smart Logic - COMPLETE REWRITE              |
+//| Calculate Pips Profit - CORRECTED VERSION                        |
 //+------------------------------------------------------------------+
-void ProcessSignalWithSmartLogic(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings,
-                                 double totalRiskMoney, string signalID, int &successCount, double &totalVolume)
+double CalculatePipsProfit(double entryPrice, double currentPrice, bool isBuy, string symbol, ENUM_SYMBOL_TYPE symType)
 {
-  // ================ INITIAL VALIDATION ================
-  PrintLog("=== SIGNAL PROCESSING STARTED ===");
-  PrintLog("Signal ID: " + signalID + ", Symbol: " + symbol + ", Order Type: " + sig.order_type);
-
-  if (sig.prices_count == 0)
+  double point = 0;
+  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
   {
-    PrintLog("❌ ERROR: No prices found in signal!");
+    PrintLog("ERROR: Cannot get point value for " + symbol);
+    return 0;
+  }
+
+  // محاسبه صحیح سود/ضرر بر اساس جهت پوزیشن
+  double priceDiff = 0;
+
+  if (isBuy) // برای پوزیشن Buy
+  {
+    priceDiff = currentPrice - entryPrice; // اگر مثبت → سود، اگر منفی → ضرر
+  }
+  else // برای پوزیشن Sell
+  {
+    priceDiff = entryPrice - currentPrice; // اگر مثبت → سود، اگر منفی → ضرر
+  }
+
+  double pips = priceDiff / point;
+
+  // Adjust for symbol type
+  if (symType == SYMBOL_TYPE_GOLD)
+    pips = pips / 10.0; // For gold, 0.10 = 1 pip
+  else if (symType == SYMBOL_TYPE_DOW || symType == SYMBOL_TYPE_NASDAQ)
+    pips = pips; // For indices, 1 point = 1 pip
+  else if (symType == SYMBOL_TYPE_BITCOIN)
+    pips = pips / 10.0; // For Bitcoin, usually 0.1 = 1 pip
+  else
+    pips = pips / 10.0; // For forex, 0.00010 = 1 pip
+
+  // Debug log
+  PrintLog("Profit Calc: Entry=" + DoubleToString(entryPrice, 2) +
+           ", Current=" + DoubleToString(currentPrice, 2) +
+           ", isBuy=" + (isBuy ? "true" : "false") +
+           ", RawDiff=" + DoubleToString(priceDiff, 2) +
+           ", Pips=" + DoubleToString(pips, 1));
+
+  return pips;
+}
+
+//+------------------------------------------------------------------+
+//| Apply Risk Management to Position (Optimized Version)           |
+//+------------------------------------------------------------------+
+void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
+{
+  if (!PositionSelectByTicket(ticket))
     return;
-  }
 
-  if (sig.tp_count == 0)
+  double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+  double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+  long position_type = PositionGetInteger(POSITION_TYPE);
+  bool isBuy = (position_type == POSITION_TYPE_BUY);
+
+  // Get signal ID from comment
+  string comment = PositionGetString(POSITION_COMMENT);
+  string signalID = "";
+  int sidPos = StringFind(comment, "SID:");
+
+  if (sidPos >= 0)
   {
-    PrintLog("⚠️ WARNING: No TPs found. Using default TP.");
-    sig.tp_count = 1;
-    ArrayResize(sig.tp_list, 1);
-    sig.tp_list[0] = 0;
-  }
-
-  PrintLog("Signal Details: " + IntegerToString(sig.prices_count) + " prices, " +
-           IntegerToString(sig.tp_count) + " TPs, " + IntegerToString(sig.sl_count) + " SLs");
-
-  // ================ ORDER TYPE ANALYSIS ================
-  string orderTypeLower = StringToLowerCustom(sig.order_type);
-
-  bool isBuyOrder = (StringFind(orderTypeLower, "buy") >= 0);
-  bool isSellOrder = (StringFind(orderTypeLower, "sell") >= 0);
-  bool isMarketOrder = false;
-  bool isLimitOrder = false;
-  bool isStopOrder = false;
-
-  // Analyze order type
-  if (isBuyOrder || isSellOrder)
-  {
-    if (StringFind(orderTypeLower, "limit") >= 0)
-      isLimitOrder = true;
-    else if (StringFind(orderTypeLower, "stop") >= 0)
-      isStopOrder = true;
-    else if (StringFind(orderTypeLower, "market") >= 0 ||
-             orderTypeLower == "buy" ||
-             orderTypeLower == "sell")
-      isMarketOrder = true;
+    string idPart = StringSubstr(comment, sidPos + 4);
+    int space = StringFind(idPart, " ");
+    if (space > 0)
+      signalID = StringSubstr(idPart, 0, space);
     else
-      isMarketOrder = true; // Default to market
+      signalID = idPart;
   }
-  else
+
+  if (StringLen(signalID) == 0)
+    return;
+
+  // محاسبه سود بر حسب پیپ
+  double profitPips = CalculatePipsProfit(entryPrice, currentPrice, isBuy, symbol, symType);
+
+  // Get risk management settings
+  SymbolSettings riskSettings = GetRiskManagementSettings(symType);
+
+  // Update risk data
+  UpdateRiskDataForPosition(ticket, currentPrice);
+
+  // Find risk data for this position
+  int riskIndex = -1;
+  for (int i = 0; i < risk_data_count; i++)
   {
-    PrintLog("❌ ERROR: Invalid order type: " + sig.order_type);
+    if (risk_data_array[i].ticket == ticket)
+    {
+      riskIndex = i;
+      break;
+    }
+  }
+
+  if (riskIndex == -1)
+  {
+    InitializeRiskDataForPosition(ticket, signalID, entryPrice,
+                                  PositionGetDouble(POSITION_SL),
+                                  PositionGetDouble(POSITION_TP));
     return;
   }
 
-  bool isBuy = isBuyOrder;
+  // ================ لاگ دیباگ ================
+  PrintLog("=== APPLY RISK MANAGEMENT ===");
+  PrintLog("Ticket: " + (string)ticket + " | Signal: " + signalID);
+  PrintLog("Profit: " + DoubleToString(profitPips, 1) + " pips | Current Stage: " +
+           IntegerToString(risk_data_array[riskIndex].stage_completed));
+  PrintLog("Targets: S1=" + IntegerToString(riskSettings.stage1_pips) +
+           " | S2=" + IntegerToString(riskSettings.stage2_pips) +
+           " | S3=" + IntegerToString(riskSettings.stage3_pips) + " pips");
+  // ================ پایان لاگ ================
 
-  PrintLog("Order Analysis:");
-  PrintLog("  Direction: " + (isBuyOrder ? "BUY" : "SELL"));
-  PrintLog("  Type: " + (isMarketOrder ? "MARKET" : (isLimitOrder ? "LIMIT" : (isStopOrder ? "STOP" : "UNKNOWN"))));
-
-  // ================ MARKET DATA ================
-  double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-  double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-  double currentMarketPrice = isBuyOrder ? ask : bid;
-  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-
-  PrintLog("Market Data:");
-  PrintLog("  Bid: " + DoubleToString(bid, 2));
-  PrintLog("  Ask: " + DoubleToString(ask, 2));
-  PrintLog("  Using: " + DoubleToString(currentMarketPrice, 2));
-  PrintLog("  Point: " + DoubleToString(point, 5));
-
-  // ================ STOP LOSS CALCULATION ================
-  double sl_price = 0;
-
-  if (sig.sl_count > 0 && sig.sl_list[0] > 0)
+  // Reset stage progress if we're in loss
+  if (profitPips <= 0)
   {
-    sl_price = sig.sl_list[0];
-    PrintLog("SL from signal: " + DoubleToString(sl_price, 2));
-  }
-  else
-  {
-    // Calculate default SL based on symbol type
-    double pips = settings.default_sl_pips;
+    int completedStage = risk_data_array[riskIndex].stage_completed;
 
-    // Adjust pips for symbol type
-    if (symType == SYMBOL_TYPE_GOLD)
-      pips = pips * 10.0;
-    else if (symType == SYMBOL_TYPE_FOREX)
-      pips = pips / 10.0;
-    // For indices (DOW/NASDAQ), use as is
-
-    double dist = pips * point;
-    sl_price = isBuy ? currentMarketPrice - dist : currentMarketPrice + dist;
-    PrintLog("Default SL calculated: " + DoubleToString(sl_price, 2) +
-             " (" + DoubleToString(pips, 1) + " pips from price)");
-  }
-
-  // ================ POSITION SIZE CALCULATION ================
-  double distSL = MathAbs(currentMarketPrice - sl_price);
-  double totalLot = CalculatePositionSize(symbol, totalRiskMoney, distSL);
-  totalLot = NormalizeLotToSymbol(totalLot, symbol);
-
-  // Apply maximum lot limit
-  if (totalLot > settings.max_lot)
-  {
-    PrintLog("⚠️ Lot size limited from " + DoubleToString(totalLot, 3) +
-             " to max: " + DoubleToString(settings.max_lot, 3));
-    totalLot = settings.max_lot;
-  }
-
-  double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-  if (minLot <= 0)
-    minLot = 0.01;
-
-  PrintLog("Position Sizing:");
-  PrintLog("  Risk Money: $" + DoubleToString(totalRiskMoney, 2));
-  PrintLog("  Total Lot: " + DoubleToString(totalLot, 3));
-  PrintLog("  Min Lot: " + DoubleToString(minLot, 3));
-  PrintLog("  SL Distance: " + DoubleToString(distSL, 5) + " (" +
-           DoubleToString(distSL / point, 1) + " points)");
-
-  // ================ MARKET PRICE DETECTION ================
-  int firstMarketIndex = -1;
-  int marketEntries = 0;
-  int pendingEntries = 0;
-
-  // Only check for market orders
-  if (isMarketOrder)
-  {
-    PrintLog("Checking prices for market execution...");
-
-    for (int i = 0; i < sig.prices_count; i++)
+    for (int s = completedStage + 1; s <= 3; s++)
     {
-      double entryPrice = sig.prices_list[i];
-      if (entryPrice <= 0)
-        continue;
-
-      // Calculate gap in market points
-      double gapPoints = MathAbs(entryPrice - currentMarketPrice) / point;
-
-      // Adjust for symbol type (convert to pips)
-      double gapPips = gapPoints;
-      if (symType == SYMBOL_TYPE_GOLD)
-        gapPips = gapPoints / 10.0;
-      else if (symType == SYMBOL_TYPE_FOREX)
-        gapPips = gapPoints / 10.0;
-      // For indices, already in pips
-
-      PrintLog("Price[" + IntegerToString(i) + "]: " + DoubleToString(entryPrice, 2) +
-               " - Gap: " + DoubleToString(gapPips, 1) + " pips" +
-               " (Max: " + IntegerToString(settings.max_slippage_pips) + " pips)");
-
-      if (gapPips <= settings.max_slippage_pips)
+      if (risk_data_array[riskIndex].stage_in_progress[s])
       {
-        if (firstMarketIndex == -1) // First market price found
-        {
-          firstMarketIndex = i;
-          PrintLog("  ✓ First market price found at index " + IntegerToString(i));
-        }
-        marketEntries++;
-      }
-      else
-      {
-        pendingEntries++;
-        PrintLog("  ✗ Outside slippage range - will be pending");
+        risk_data_array[riskIndex].stage_in_progress[s] = false;
+        risk_data_array[riskIndex].stage_attempt_count[s] = 0;
+        PrintLog("Stage " + IntegerToString(s) + " reset due to loss");
       }
     }
 
-    PrintLog("Market Analysis: " + IntegerToString(marketEntries) + " market entries, " +
-             IntegerToString(pendingEntries) + " pending entries");
-  }
-  else
-  {
-    // For limit/stop orders, all are pending
-    pendingEntries = sig.prices_count;
-    PrintLog("Limit/Stop order detected - all " + IntegerToString(pendingEntries) + " entries will be pending");
-  }
-
-  // ================ POSITION COUNT CALCULATION ================
-  int totalExpectedPositions = 0;
-  string executionMode = "";
-
-  if (isMarketOrder && firstMarketIndex >= 0)
-  {
-    // We have at least one market price
-    int marketPositions = sig.tp_count;                           // For the first market price
-    int pendingPositions = (sig.prices_count - 1) * sig.tp_count; // For other prices
-
-    totalExpectedPositions = marketPositions + pendingPositions;
-
-    if (pendingPositions > 0)
-    {
-      executionMode = "Mixed: Market + Pending";
-      PrintLog("Execution Mode: " + executionMode);
-      PrintLog("  Market Positions: " + IntegerToString(marketPositions) +
-               " (first price × " + IntegerToString(sig.tp_count) + " TPs)");
-      PrintLog("  Pending Positions: " + IntegerToString(pendingPositions) +
-               " (" + IntegerToString(sig.prices_count - 1) + " prices × " +
-               IntegerToString(sig.tp_count) + " TPs)");
-    }
-    else
-    {
-      executionMode = "All Market";
-      PrintLog("Execution Mode: " + executionMode);
-      PrintLog("  All positions will be market orders");
-    }
-  }
-  else
-  {
-    // All pending orders
-    totalExpectedPositions = sig.prices_count * sig.tp_count;
-
-    if (isLimitOrder)
-      executionMode = "All Pending (Limit Orders)";
-    else if (isStopOrder)
-      executionMode = "All Pending (Stop Orders)";
-    else
-      executionMode = "All Pending";
-
-    PrintLog("Execution Mode: " + executionMode);
-    PrintLog("  Total Positions: " + IntegerToString(sig.prices_count) +
-             " prices × " + IntegerToString(sig.tp_count) + " TPs = " +
-             IntegerToString(totalExpectedPositions));
-  }
-
-  // ================ LOT SPLITTING VALIDATION ================
-  if (totalExpectedPositions <= 0)
-  {
-    PrintLog("❌ ERROR: Cannot calculate position count!");
+    PrintLog("=== END (Loss) ===");
+    PrintLog(" ");
     return;
   }
 
-  double lotPerPosition = NormalizeLotToSymbol(totalLot / totalExpectedPositions, symbol);
-  bool validSplitVolume = (lotPerPosition >= minLot);
-
-  PrintLog("Lot Splitting:");
-  PrintLog("  Positions: " + IntegerToString(totalExpectedPositions));
-  PrintLog("  Lot/Position: " + DoubleToString(lotPerPosition, 3));
-  PrintLog("  Valid Split: " + (validSplitVolume ? "YES ✓" : "NO ✗"));
-
-  // ================ SPECIAL CASE: INVALID SPLIT ================
-  if (!validSplitVolume)
+  // Check global risk-free condition
+  if (profitPips >= riskSettings.global_riskfree_pips && !risk_data_array[riskIndex].risk_free_active)
   {
-    PrintLog("⚠️ ENTERING SPECIAL EXECUTION MODE");
-    PrintLog("Reason: Lot per position (" + DoubleToString(lotPerPosition, 3) +
-             ") < minimum (" + DoubleToString(minLot, 3) + ")");
+    ApplyGlobalRiskFree(ticket, entryPrice, riskSettings.global_riskfree_pips,
+                        riskSettings.riskfree_distance, isBuy, symbol);
+    risk_data_array[riskIndex].risk_free_active = true;
+    risk_data_array[riskIndex].stage_completed = 3;
 
-    // Create one pending order with full volume
-    double pendingPrice = 0;
+    if (EnableTelegram)
+      SendRiskManagementAlert(symbol, signalID, 4, "Global Risk-Free Activated", profitPips, 0);
 
-    if (sig.prices_count > 0 && sig.prices_list[0] > 0)
+    PrintLog("=== END (Global Risk-Free) ===");
+    PrintLog(" ");
+    return;
+  }
+
+  // Check if we should close pending orders
+  if (ClosePendingOnProfit && !risk_data_array[riskIndex].pending_closed &&
+      profitPips >= riskSettings.close_pending_at_profit)
+  {
+    ClosePendingOrdersForSignal(signalID, "Profit target reached: " +
+                                              DoubleToString(profitPips, 1) + " pips");
+    risk_data_array[riskIndex].pending_closed = true;
+  }
+
+  // ================ سیستم جدید: هر استیج مستقل چک شود ================
+  bool anyStageProcessed = false;
+
+  // Stage 1: همیشه اول چک شود
+  if (profitPips >= riskSettings.stage1_pips && risk_data_array[riskIndex].stage_completed < 1)
+  {
+    PrintLog("📊 Stage 1 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
+             ") >= " + IntegerToString(riskSettings.stage1_pips) +
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 1");
+
+    // گزارش تلگرام برای شروع استیج 1
+    if (EnableTelegram)
     {
-      pendingPrice = sig.prices_list[0];
-      PrintLog("Using first signal price: " + DoubleToString(pendingPrice, 2));
+      string msg = "🟢 *Stage 1 Triggered!*\n\n";
+      msg += "🏷️ Symbol: " + symbol + "\n";
+      msg += "🆔 Signal: `" + signalID + "`\n";
+      msg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+      msg += "🎯 Target: " + IntegerToString(riskSettings.stage1_pips) + " pips\n";
+      msg += "💰 Close %: " + DoubleToString(riskSettings.stage1_close_percent, 1) + "%\n";
+      msg += "🔄 Retry Logic: " + IntegerToString(MaxRetryAttempts_Stage1) + " attempts\n";
+      msg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+      msg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+      SendTelegramFarsi(msg);
     }
-    else
+
+    ProcessStageWithRetry(ticket, riskIndex, 1, profitPips, riskSettings.stage1_close_percent,
+                          "Stage 1 Profit Taking", symbol, isBuy, currentPrice, entryPrice,
+                          signalID, symType);
+    anyStageProcessed = true;
+  }
+
+  // Stage 2: مستقل از Stage 1 چک شود
+  if (profitPips >= riskSettings.stage2_pips && risk_data_array[riskIndex].stage_completed < 2)
+  {
+    PrintLog("📊 Stage 2 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
+             ") >= " + IntegerToString(riskSettings.stage2_pips) +
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 2");
+
+    // گزارش تلگرام برای شروع استیج 2
+    if (EnableTelegram)
     {
-      // Calculate based on SL distance
-      double pips = settings.pending_distance_pips;
-      double multiplier = 1.0;
-
-      if (symType == SYMBOL_TYPE_GOLD)
-        multiplier = 10.0;
-      else if (symType == SYMBOL_TYPE_FOREX)
-        multiplier = 10.0;
-
-      double distance = pips * point * multiplier;
-      pendingPrice = isBuy ? sl_price + distance : sl_price - distance;
-      PrintLog("Calculated pending price: " + DoubleToString(pendingPrice, 2) +
-               " (" + IntegerToString(pips) + " pips from SL)");
+      string msg = "🟡 *Stage 2 Triggered!*\n\n";
+      msg += "🏷️ Symbol: " + symbol + "\n";
+      msg += "🆔 Signal: `" + signalID + "`\n";
+      msg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+      msg += "🎯 Target: " + IntegerToString(riskSettings.stage2_pips) + " pips\n";
+      msg += "💰 Close %: " + DoubleToString(riskSettings.stage2_close_percent, 1) + "%\n";
+      msg += "⚖️ Break-even at: +" + IntegerToString(riskSettings.stage2_breakeven_pips) + " pips\n";
+      msg += "🔄 Retry Logic: " + IntegerToString(MaxRetryAttempts_Stage2) + " attempts\n";
+      msg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+      msg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+      SendTelegramFarsi(msg);
     }
 
-    // Get TP - اصلاح شده: فقط 9 پارامتر
-    double firstTP = GetFirstTP(sig, symbol, symType, settings, currentMarketPrice, isBuy,
-                                sig.order_type, false, true);
+    ProcessStageWithRetry(ticket, riskIndex, 2, profitPips, riskSettings.stage2_close_percent,
+                          "Stage 2 Profit Taking", symbol, isBuy, currentPrice, entryPrice,
+                          signalID, symType);
+    anyStageProcessed = true;
+  }
 
-    PrintLog("Creating single pending order:");
-    PrintLog("  Price: " + DoubleToString(pendingPrice, 2));
-    PrintLog("  SL: " + DoubleToString(sl_price, 2));
-    PrintLog("  TP: " + (firstTP > 0 ? DoubleToString(firstTP, 2) : "OPEN"));
-    PrintLog("  Lot: " + DoubleToString(totalLot, 3));
+  // Stage 3: مستقل از Stage‌های قبلی چک شود
+  if (profitPips >= riskSettings.stage3_pips && risk_data_array[riskIndex].stage_completed < 3)
+  {
+    PrintLog("📊 Stage 3 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
+             ") >= " + IntegerToString(riskSettings.stage3_pips) +
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 3");
 
-    if (SendPendingOrder(symbol, sig.order_type, pendingPrice, sl_price, firstTP, totalLot, signalID))
+    // گزارش تلگرام برای شروع استیج 3
+    if (EnableTelegram)
     {
-      successCount = 1;
-      totalVolume = totalLot;
+      string msg = "🔴 *Stage 3 Triggered!*\n\n";
+      msg += "🏷️ Symbol: " + symbol + "\n";
+      msg += "🆔 Signal: `" + signalID + "`\n";
+      msg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+      msg += "🎯 Target: " + IntegerToString(riskSettings.stage3_pips) + " pips\n";
+      msg += "💰 Close %: " + DoubleToString(riskSettings.stage3_close_percent, 1) + "%\n";
+      msg += "🎯 Trailing Stop: " + IntegerToString(riskSettings.trailing_stop_pips) + " pips\n";
+      msg += "🔄 Retry Logic: " + IntegerToString(MaxRetryAttempts_Stage3) + " attempts\n";
+      msg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+      msg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+      SendTelegramFarsi(msg);
+    }
 
+    ProcessStageWithRetry(ticket, riskIndex, 3, profitPips, riskSettings.stage3_close_percent,
+                          "Stage 3 Profit Taking", symbol, isBuy, currentPrice, entryPrice,
+                          signalID, symType);
+    anyStageProcessed = true;
+  }
+
+  // اگر هیچ استیجی پردازش نشد ولی شرایط سود وجود دارد
+  if (!anyStageProcessed && profitPips > 0)
+  {
+    PrintLog("📊 No stage processed. Current status:");
+    PrintLog("   Profit: " + DoubleToString(profitPips, 1) + " pips");
+    PrintLog("   Stage Completed: " + IntegerToString(risk_data_array[riskIndex].stage_completed));
+    PrintLog("   Stage1 Target: " + IntegerToString(riskSettings.stage1_pips) +
+             " | Met: " + (profitPips >= riskSettings.stage1_pips ? "YES" : "NO"));
+    PrintLog("   Stage2 Target: " + IntegerToString(riskSettings.stage2_pips) +
+             " | Met: " + (profitPips >= riskSettings.stage2_pips ? "YES" : "NO"));
+    PrintLog("   Stage3 Target: " + IntegerToString(riskSettings.stage3_pips) +
+             " | Met: " + (profitPips >= riskSettings.stage3_pips ? "YES" : "NO"));
+  }
+
+  // Apply trailing stop if stage 3 is active
+  if (risk_data_array[riskIndex].stage_completed >= 3 && !risk_data_array[riskIndex].risk_free_active)
+  {
+    ApplyTrailingStop(ticket, risk_data_array[riskIndex].best_price,
+                      riskSettings.trailing_stop_pips, isBuy, symbol);
+  }
+
+  PrintLog("=== END RISK MANAGEMENT CHECK ===");
+  PrintLog(" ");
+}
+
+//+------------------------------------------------------------------+
+//| Process Stage With Retry Logic (Enhanced with Telegram)         |
+//+------------------------------------------------------------------+
+void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profitPips, double closePercent,
+                           string reason, string symbol, bool isBuy, double currentPrice, double entryPrice,
+                           string signalID, ENUM_SYMBOL_TYPE symType)
+{
+  // بررسی محدوده آرایه
+  if (riskIndex < 0 || riskIndex >= risk_data_count)
+    return;
+
+  // اگر قبلاً کامل شده
+  if (risk_data_array[riskIndex].stage_completed >= stage)
+    return;
+
+  SymbolSettings riskSettings = GetSymbolSettings(symType);
+
+  // Get max attempts for this stage from input
+  int maxAttempts = 5; // default
+  if (stage == 1)
+    maxAttempts = MaxRetryAttempts_Stage1;
+  else if (stage == 2)
+    maxAttempts = MaxRetryAttempts_Stage2;
+  else if (stage == 3)
+    maxAttempts = MaxRetryAttempts_Stage3;
+
+  // ================ لاگ اول ================
+  PrintLog("🚀 Stage " + IntegerToString(stage) + " Process Started" +
+           " | Profit: " + DoubleToString(profitPips, 1) + " pips" +
+           " | Target: " + IntegerToString(riskSettings.stage1_pips) + "/" +
+           IntegerToString(riskSettings.stage2_pips) + "/" +
+           IntegerToString(riskSettings.stage3_pips) + " pips" +
+           " | Max Attempts: " + IntegerToString(maxAttempts) +
+           " | Retry Delay: " + IntegerToString(RetryDelaySeconds) + "s");
+
+  // Update max attempts in data array
+  risk_data_array[riskIndex].stage_max_attempts[stage] = maxAttempts;
+
+  // اگر در حال تلاش برای این stage نیستیم، شروع کن
+  if (!risk_data_array[riskIndex].stage_in_progress[stage])
+  {
+    risk_data_array[riskIndex].stage_in_progress[stage] = true;
+    risk_data_array[riskIndex].stage_start_time[stage] = TimeCurrent();
+    risk_data_array[riskIndex].stage_attempt_count[stage] = 0;
+
+    PrintLog("🚀 Starting Stage " + IntegerToString(stage) +
+             " at " + DoubleToString(profitPips, 1) + " pips profit" +
+             " (Max attempts: " + IntegerToString(maxAttempts) + ")");
+
+    if (EnableTelegram)
+    {
+      SendStageAttemptAlert(symbol, signalID, stage, 1, profitPips, "STARTING", maxAttempts);
+    }
+  }
+
+  // Check if we should wait between retries
+  if (risk_data_array[riskIndex].stage_attempt_count[stage] > 0 &&
+      (TimeCurrent() - risk_data_array[riskIndex].stage_start_time[stage]) < RetryDelaySeconds)
+  {
+    return;
+  }
+
+  // تلاش برای بستن جزئی
+  risk_data_array[riskIndex].stage_attempt_count[stage]++;
+  int attemptCount = risk_data_array[riskIndex].stage_attempt_count[stage];
+
+  PrintLog("🔄 Stage " + IntegerToString(stage) + " Attempt #" +
+           IntegerToString(attemptCount) + "/" + IntegerToString(maxAttempts) +
+           " | Profit: " + DoubleToString(profitPips, 1) + " pips" +
+           " | Time: " + TimeToString(TimeCurrent(), TIME_SECONDS));
+
+  // گزارش تلگرام برای هر تلاش
+  if (EnableTelegram && attemptCount > 1)
+  {
+    string attemptMsg = "";
+    if (stage == 1)
+      attemptMsg = "🟢";
+    else if (stage == 2)
+      attemptMsg = "🟡";
+    else if (stage == 3)
+      attemptMsg = "🔴";
+
+    attemptMsg += " *Stage " + IntegerToString(stage) + " Retry*\n\n";
+    attemptMsg += "🏷️ Symbol: " + symbol + "\n";
+    attemptMsg += "🆔 Signal: `" + signalID + "`\n";
+    attemptMsg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+    attemptMsg += "🔄 Attempt: " + IntegerToString(attemptCount) + "/" + IntegerToString(maxAttempts) + "\n";
+    attemptMsg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+    attemptMsg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+    SendTelegramFarsi(attemptMsg);
+  }
+
+  bool success = ClosePartialPosition(ticket, closePercent,
+                                      reason + " (Attempt " +
+                                          IntegerToString(attemptCount) +
+                                          "/" + IntegerToString(maxAttempts) + ")");
+
+  if (EnableTelegram)
+  {
+    SendStageAttemptAlert(symbol, signalID, stage, attemptCount,
+                          profitPips, success ? "ATTEMPTING" : "FAILED",
+                          maxAttempts);
+  }
+
+  if (success)
+  {
+    // موفق شدیم
+    risk_data_array[riskIndex].stage_completed = stage;
+    risk_data_array[riskIndex].stage_in_progress[stage] = false;
+    risk_data_array[riskIndex].stage_attempt_count[stage] = 0;
+
+    PrintLog("🎉 STAGE " + IntegerToString(stage) + " COMPLETED SUCCESSFULLY!");
+    PrintLog("   Old stage_completed: " + IntegerToString(stage - 1));
+    PrintLog("   New stage_completed: " + IntegerToString(risk_data_array[riskIndex].stage_completed));
+
+    // گزارش موفقیت به تلگرام
+    if (EnableTelegram)
+    {
+      string emoji = "";
+      string stageName = "";
+
+      if (stage == 1)
+      {
+        emoji = "🟢";
+        stageName = "Stage 1";
+      }
+      else if (stage == 2)
+      {
+        emoji = "🟡";
+        stageName = "Stage 2";
+      }
+      else if (stage == 3)
+      {
+        emoji = "🔴";
+        stageName = "Stage 3";
+      }
+
+      string successMsg = emoji + " *" + stageName + " Completed!*\n\n";
+      successMsg += "🏷️ Symbol: " + symbol + "\n";
+      successMsg += "🆔 Signal: `" + signalID + "`\n";
+      successMsg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+      successMsg += "💰 Closed: " + DoubleToString(closePercent, 1) + "% of position\n";
+      successMsg += "🔄 Attempt: " + IntegerToString(attemptCount) + "\n";
+
+      if (stage == 2)
+        successMsg += "⚖️ Stop Loss moved to break-even (+" +
+                      IntegerToString(riskSettings.stage2_breakeven_pips) + " pips)\n";
+      else if (stage == 3)
+        successMsg += "🎯 Trailing stop activated (" +
+                      IntegerToString(riskSettings.trailing_stop_pips) + " pips)\n";
+
+      successMsg += "✅ Action: " + reason + "\n";
+      successMsg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+      SendTelegramFarsi(successMsg);
+    }
+
+    // اعمال تغییرات مربوطه
+    if (stage == 2)
+    {
+      MoveToBreakEven(ticket, entryPrice, riskSettings.stage2_breakeven_pips, isBuy, symbol);
+    }
+    else if (stage == 3)
+    {
+      ApplyTrailingStop(ticket, currentPrice, riskSettings.trailing_stop_pips, isBuy, symbol);
+    }
+
+    PrintLog("✅ Stage " + IntegerToString(stage) + " completed successfully after " +
+             IntegerToString(attemptCount) + " attempts");
+  }
+  else
+  {
+    // موفق نشدیم - زمان شروع را برای تأخیر بعدی به روز کن
+    risk_data_array[riskIndex].stage_start_time[stage] = TimeCurrent();
+
+    PrintLog("⚠️ Stage " + IntegerToString(stage) + " attempt #" +
+             IntegerToString(attemptCount) + "/" + IntegerToString(maxAttempts) +
+             " failed. Profit: " + DoubleToString(profitPips, 1) + " pips");
+
+    // اگر به حداکثر تلاش رسیدیم، صرف نظر کن
+    if (attemptCount >= maxAttempts)
+    {
+      PrintLog("❌ MAX ATTEMPTS REACHED for Stage " + IntegerToString(stage) +
+               " after " + IntegerToString(maxAttempts) + " failed attempts" +
+               " | Profit: " + DoubleToString(profitPips, 1) + " pips");
+
+      // ================ هشدار تلگرام ================
       if (EnableTelegram)
       {
-        SendSignalAlert(signalID, symbol,
-                        "⚡ *Special Execution Mode*\n" +
-                            "Lot too small to split\n" +
-                            "Created 1 pending order\n" +
-                            "Price: " + DoubleToString(pendingPrice, 2) + "\n" +
-                            "Lot: " + DoubleToString(totalLot, 3));
-      }
-    }
+        string maxAttemptMsg = "🛑 *Max Retry Attempts Reached!*\n\n";
+        maxAttemptMsg += "🏷️ Symbol: " + symbol + "\n";
+        maxAttemptMsg += "🆔 Signal: `" + signalID + "`\n";
+        maxAttemptMsg += "🔰 Stage: " + IntegerToString(stage) + "\n";
+        maxAttemptMsg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+        maxAttemptMsg += "🔄 Attempts: " + IntegerToString(maxAttempts) + "/" + IntegerToString(maxAttempts) + "\n";
+        maxAttemptMsg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+        maxAttemptMsg += "⚠️ Stage will be skipped\n";
+        maxAttemptMsg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
 
+        SendTelegramFarsi(maxAttemptMsg);
+      }
+      // ================ پایان هشدار ================
+
+      risk_data_array[riskIndex].stage_in_progress[stage] = false;
+      risk_data_array[riskIndex].stage_attempt_count[stage] = 0;
+
+      return;
+    }
+  }
+}
+//+------------------------------------------------------------------+
+//| Close Partial Position with Success Check                        |
+//+------------------------------------------------------------------+
+bool ClosePartialPosition(ulong ticket, double percent, string reason)
+{
+  if (!PositionSelectByTicket(ticket))
+    return false;
+
+  double volume = PositionGetDouble(POSITION_VOLUME);
+  double closeVolume = volume * percent / 100.0;
+
+  // Normalize volume
+  string symbol = PositionGetString(POSITION_SYMBOL);
+  closeVolume = NormalizeLotToSymbol(closeVolume, symbol);
+
+  if (closeVolume <= 0)
+    return false;
+
+  // Check minimum lot
+  double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+  if (closeVolume < minLot)
+  {
+    PrintLog("Cannot close partial: " + DoubleToString(closeVolume, 2) +
+             " < min lot " + DoubleToString(minLot, 2));
+    return false;
+  }
+
+  // Attempt to close partial
+  bool success = trade.PositionClosePartial(ticket, closeVolume);
+
+  if (success)
+  {
+    PrintLog("✅ Partial close successful: " + DoubleToString(closeVolume, 2) +
+             " lots (" + DoubleToString(percent, 1) + "%) - " + reason);
+  }
+  else
+  {
+    PrintLog("❌ Partial close FAILED: " + DoubleToString(closeVolume, 2) +
+             " lots - Error: " + IntegerToString(trade.ResultRetcode()) +
+             " - " + trade.ResultComment());
+  }
+
+  return success;
+}
+
+// ================ SYMBOL MANAGEMENT FUNCTIONS ================
+
+//+------------------------------------------------------------------+
+//| Initialize Symbol Settings                                       |
+//+------------------------------------------------------------------+
+void InitializeSymbolSettings()
+{
+  gold_settings.max_lot = MaxLotSize_GOLD;
+  gold_settings.default_sl_pips = DefaultStopPips_GOLD;
+  gold_settings.default_tp_pips = DefaultTpForOpenPips_GOLD;
+  gold_settings.max_slippage_pips = MaxSlippageForMarketPips_GOLD;
+  gold_settings.pending_distance_pips = PendingOrderDistanceFromSL_GOLD;
+
+  dow_settings.max_lot = MaxLotSize_DOW;
+  dow_settings.default_sl_pips = DefaultStopPips_DOW;
+  dow_settings.default_tp_pips = DefaultTpForOpenPips_DOW;
+  dow_settings.max_slippage_pips = MaxSlippageForMarketPips_DOW;
+  dow_settings.pending_distance_pips = PendingOrderDistanceFromSL_DOW;
+
+  nas_settings.max_lot = MaxLotSize_NAS;
+  nas_settings.default_sl_pips = DefaultStopPips_NAS;
+  nas_settings.default_tp_pips = DefaultTpForOpenPips_NAS;
+  nas_settings.max_slippage_pips = MaxSlippageForMarketPips_NAS;
+  nas_settings.pending_distance_pips = PendingOrderDistanceFromSL_NAS;
+
+  btc_settings.max_lot = MaxLotSize_BTC;
+  btc_settings.default_sl_pips = DefaultStopPips_BTC;
+  btc_settings.default_tp_pips = DefaultTpForOpenPips_BTC;
+  btc_settings.max_slippage_pips = MaxSlippageForMarketPips_BTC;
+  btc_settings.pending_distance_pips = PendingOrderDistanceFromSL_BTC;
+
+  forex_settings.max_lot = MaxLotSize_FOREX;
+  forex_settings.default_sl_pips = DefaultStopPips_FOREX;
+  forex_settings.default_tp_pips = DefaultTpForOpenPips_FOREX;
+  forex_settings.max_slippage_pips = MaxSlippageForMarketPips_FOREX;
+  forex_settings.pending_distance_pips = PendingOrderDistanceFromSL_FOREX;
+}
+
+//+------------------------------------------------------------------+
+//| Get Symbol Type                                                  |
+//+------------------------------------------------------------------+
+ENUM_SYMBOL_TYPE GetSymbolType(string symbol)
+{
+  string symLower = StringToLowerCustom(symbol);
+
+  if (StringFind(symLower, "xau") >= 0 || StringFind(symLower, "gold") >= 0 ||
+      StringFind(symLower, "XAUUSD") >= 0 || StringFind(symLower, "XAUUSD_o") >= 0)
+    return SYMBOL_TYPE_GOLD;
+
+  if (StringFind(symLower, "us30") >= 0 || StringFind(symLower, "dow") >= 0 ||
+      StringFind(symLower, "dj") >= 0 || StringFind(symLower, "yinusd") >= 0 ||
+      StringFind(symLower, "ym") >= 0)
+    return SYMBOL_TYPE_DOW;
+
+  if (StringFind(symLower, "nas100") >= 0 || StringFind(symLower, "nas") >= 0 ||
+      StringFind(symLower, "nq") >= 0 || StringFind(symLower, "ustec") >= 0)
+    return SYMBOL_TYPE_NASDAQ;
+
+  if (StringFind(symLower, "btc") >= 0 || StringFind(symLower, "bitcoin") >= 0 ||
+      StringFind(symLower, "BTCUSD") >= 0 || StringFind(symLower, "XBTUSD") >= 0 ||
+      StringFind(symLower, "BCHUSD") >= 0)
+    return SYMBOL_TYPE_BITCOIN;
+
+  return SYMBOL_TYPE_FOREX;
+}
+
+//+------------------------------------------------------------------+
+//| Get Symbol Type Name                                             |
+//+------------------------------------------------------------------+
+string GetSymbolTypeName(ENUM_SYMBOL_TYPE symType)
+{
+  switch (symType)
+  {
+  case SYMBOL_TYPE_GOLD:
+    return "GOLD";
+  case SYMBOL_TYPE_DOW:
+    return "DOW JONES";
+  case SYMBOL_TYPE_NASDAQ:
+    return "NASDAQ";
+  case SYMBOL_TYPE_BITCOIN:
+    return "BITCOIN";
+  case SYMBOL_TYPE_FOREX:
+    return "FOREX";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+// ================ TELEGRAM FUNCTIONS ================
+
+//+------------------------------------------------------------------+
+//| Send Stage Attempt Alert (Enhanced)                             |
+//+------------------------------------------------------------------+
+void SendStageAttemptAlert(string symbol, string signalID, int stage, int attempt,
+                           double profitPips, string status, int maxAttempts)
+{
+  if (!EnableTelegram)
     return;
+
+  string emoji = "";
+  string stageName = "";
+
+  if (stage == 1)
+  {
+    emoji = "🟢";
+    stageName = "Stage 1";
+  }
+  else if (stage == 2)
+  {
+    emoji = "🟡";
+    stageName = "Stage 2";
+  }
+  else if (stage == 3)
+  {
+    emoji = "🔴";
+    stageName = "Stage 3";
+  }
+  else
+  {
+    emoji = "⚪";
+    stageName = "Stage " + IntegerToString(stage);
   }
 
-  // ================ NORMAL EXECUTION ================
-  PrintLog("✅ PROCEEDING WITH NORMAL EXECUTION");
+  string message = emoji + " *" + stageName + " - " + status + "*\n\n";
+  message += "🏷️ Symbol: " + symbol + "\n";
+  message += "🆔 Signal ID: `" + signalID + "`\n";
+  message += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+  message += "🔰 Stage: " + IntegerToString(stage) + "\n";
+  message += "🔄 Attempt: " + IntegerToString(attempt) + "/" + IntegerToString(maxAttempts) + "\n";
+  message += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
 
-  int marketOrdersCreated = 0;
-  int pendingOrdersCreated = 0;
-  int skippedOrders = 0;
+  if (status == "STARTING")
+    message += "🚀 Starting stage execution\n";
+  else if (status == "ATTEMPTING")
+    message += "🔄 Attempting partial close\n";
+  else if (status == "FAILED")
+    message += "❌ Close attempt failed\n";
 
-  // Process each price
-  for (int priceIndex = 0; priceIndex < sig.prices_count; priceIndex++)
+  message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+  SendTelegramFarsi(message);
+}
+
+//+------------------------------------------------------------------+
+//| Send Stage Retry Alert                                          |
+//+------------------------------------------------------------------+
+void SendStageRetryAlert(string symbol, string signalID, int stage, int maxAttempts, double profitPips)
+{
+  if (!EnableTelegram)
+    return;
+
+  string message = "⚠️ *Stage Retry Limit Reached*\n\n";
+  message += "🏷️ Symbol: " + symbol + "\n";
+  message += "🆔 Signal ID: `" + signalID + "`\n";
+  message += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+  message += "🔰 Stage: " + IntegerToString(stage) + "\n";
+  message += "🔄 Max Attempts: " + IntegerToString(maxAttempts) + "\n";
+  message += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
+  message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+  message += "\n\nℹ️ Stage will be reset. Will retry if profit target is reached again.";
+
+  SendTelegramFarsi(message);
+}
+
+//+------------------------------------------------------------------+
+//| Send Risk Management Alert                                       |
+//+------------------------------------------------------------------+
+void SendRiskManagementAlert(string symbol, string signalID, int stage, string action, double profitPips, double closedPercent)
+{
+  if (!EnableTelegram)
+    return;
+
+  string stageNames[] = {"", "Stage 1", "Stage 2", "Stage 3", "Global Risk-Free"};
+  string emojis[] = {"", "🟢", "🟡", "🔴", "🛡️"};
+
+  string message = emojis[stage] + " *" + stageNames[stage] + " Completed!*\n\n";
+  message += "🏷️ Symbol: " + symbol + "\n";
+  message += "🆔 Signal ID: `" + signalID + "`\n";
+  message += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
+
+  if (stage >= 1 && stage <= 3)
+    message += "💰 Closed: " + DoubleToString(closedPercent, 1) + "% of position\n";
+
+  message += "✅ Action: " + action + "\n";
+
+  if (stage == 2)
+    message += "⚖️ Stop Loss moved to break-even\n";
+  else if (stage == 3)
+    message += "🎯 Trailing stop activated\n";
+  else if (stage == 4)
+    message += "🛡️ Global risk-free activated\n";
+
+  message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+  SendTelegramFarsi(message);
+}
+
+//+------------------------------------------------------------------+
+//| Send Telegram Farsi Message                                      |
+//+------------------------------------------------------------------+
+bool SendTelegramFarsi(string message)
+{
+  if (!EnableTelegram || !CheckTelegramSettings())
+    return false;
+
+  string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
+
+  // فرار کردن کاراکترهای خاص برای JSON
+  string cleanMsg = message;
+  StringReplace(cleanMsg, "\\", "\\\\");
+  StringReplace(cleanMsg, "\"", "\\\"");
+  StringReplace(cleanMsg, "\n", "\\n");
+  StringReplace(cleanMsg, "\r", "");
+  StringReplace(cleanMsg, "\t", "\\t");
+
+  string json = "{\"chat_id\": \"" + TelegramChatID + "\", " +
+                "\"text\": \"" + cleanMsg + "\", " +
+                "\"parse_mode\": \"Markdown\", " +
+                "\"disable_web_page_preview\": true, " +
+                "\"disable_notification\": false}";
+
+  char post[], res[];
+  StringToCharArray(json, post, 0, WHOLE_ARRAY, CP_UTF8);
+  if (ArraySize(post) > 0)
+    ArrayResize(post, ArraySize(post) - 1);
+
+  string headers = "Content-Type: application/json\r\n";
+  string res_headers;
+
+  int code = WebRequest("POST", url, headers, TelegramTimeout, post, res, res_headers);
+
+  if (code != 200)
   {
-    double entryPrice = sig.prices_list[priceIndex];
-    if (entryPrice <= 0)
+    PrintLog("Telegram Error: " + IntegerToString(code));
+    return false;
+  }
+  return true;
+}
+
+// ================ OTHER NECESSARY FUNCTIONS ================
+
+//+------------------------------------------------------------------+
+//| Move to Break-Even                                               |
+//+------------------------------------------------------------------+
+void MoveToBreakEven(ulong ticket, double entryPrice, int breakEvenPips, bool isBuy, string symbol)
+{
+  if (!PositionSelectByTicket(ticket))
+    return;
+
+  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
+
+  // Adjust pips to points
+  double breakEvenPoints = breakEvenPips * point;
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    breakEvenPoints = breakEvenPips * point * 10.0;
+  else if (symType == SYMBOL_TYPE_FOREX)
+    breakEvenPoints = breakEvenPips * point * 10.0;
+
+  double newSL = 0;
+  if (isBuy)
+  {
+    newSL = entryPrice + breakEvenPoints;
+  }
+  else
+  {
+    newSL = entryPrice - breakEvenPoints;
+  }
+
+  trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
+  PrintLog("Break-even SL set: " + DoubleToString(newSL, 5) +
+           " (" + IntegerToString(breakEvenPips) + " pips from entry)");
+}
+
+//+------------------------------------------------------------------+
+//| Apply Trailing Stop                                              |
+//+------------------------------------------------------------------+
+void ApplyTrailingStop(ulong ticket, double currentPrice, int trailingPips, bool isBuy, string symbol)
+{
+  if (!PositionSelectByTicket(ticket))
+    return;
+
+  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
+  double currentSL = PositionGetDouble(POSITION_SL);
+
+  double trailingPoints = trailingPips * point;
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    trailingPoints = trailingPips * point * 10.0;
+  else if (symType == SYMBOL_TYPE_FOREX)
+    trailingPoints = trailingPips * point * 10.0;
+
+  double newSL = currentSL;
+
+  if (isBuy)
+  {
+    double proposedSL = currentPrice - trailingPoints;
+    if (proposedSL > currentSL && proposedSL > PositionGetDouble(POSITION_PRICE_OPEN))
     {
-      PrintLog("Skipping Price[" + IntegerToString(priceIndex) + "]: Invalid price");
-      skippedOrders++;
+      newSL = proposedSL;
+    }
+  }
+  else
+  {
+    double proposedSL = currentPrice + trailingPoints;
+    if (proposedSL < currentSL && proposedSL < PositionGetDouble(POSITION_PRICE_OPEN))
+    {
+      newSL = proposedSL;
+    }
+  }
+
+  if (newSL != currentSL)
+  {
+    trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
+    PrintLog("Trailing stop updated: " + DoubleToString(newSL, 5));
+  }
+}
+
+//+------------------------------------------------------------------+
+//| Update Risk Data for Position                                    |
+//+------------------------------------------------------------------+
+void UpdateRiskDataForPosition(ulong ticket, double currentPrice)
+{
+  for (int i = 0; i < risk_data_count; i++)
+  {
+    if (risk_data_array[i].ticket == ticket)
+    {
+      if (PositionSelectByTicket(ticket))
+      {
+        long position_type = PositionGetInteger(POSITION_TYPE);
+
+        if (position_type == POSITION_TYPE_BUY)
+        {
+          if (currentPrice > risk_data_array[i].best_price)
+            risk_data_array[i].best_price = currentPrice;
+        }
+        else if (position_type == POSITION_TYPE_SELL)
+        {
+          if (currentPrice < risk_data_array[i].best_price)
+            risk_data_array[i].best_price = currentPrice;
+        }
+
+        risk_data_array[i].last_check = TimeCurrent();
+      }
+      break;
+    }
+  }
+}
+
+//+------------------------------------------------------------------+
+//| Manage Risk for All Open Positions                               |
+//+------------------------------------------------------------------+
+void ManageRiskForOpenPositions()
+{
+  if (!EnableRiskManagement)
+    return;
+
+  for (int i = PositionsTotal() - 1; i >= 0; i--)
+  {
+    ulong ticket = PositionGetTicket(i);
+    if (ticket <= 0)
       continue;
-    }
 
-    PrintLog("--- Processing Price[" + IntegerToString(priceIndex) + "]: " +
-             DoubleToString(entryPrice, 2) + " ---");
+    long magic = PositionGetInteger(POSITION_MAGIC);
+    if (magic != ExpertMagicNumber)
+      continue;
 
-    // Check if this should be a market order
-    bool isThisMarketOrder = (isMarketOrder && priceIndex == firstMarketIndex);
+    string symbol = PositionGetString(POSITION_SYMBOL);
+    ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
 
-    // Process each TP for this price
-    for (int tpIndex = 0; tpIndex < sig.tp_count; tpIndex++)
-    {
-      double tp_val = sig.tp_list[tpIndex];
-
-      // Calculate TP if needed
-      if (tp_val <= 0)
-      {
-        tp_val = GetFirstTP(sig, symbol, symType, settings, currentMarketPrice, isBuy,
-                            sig.order_type, isThisMarketOrder, !isThisMarketOrder);
-      }
-
-      string tpStr = (tp_val == 0) ? "OPEN" : DoubleToString(tp_val, 2);
-
-      if (isThisMarketOrder)
-      {
-        // Send market order
-        PrintLog("Market Order " + IntegerToString(tpIndex + 1) + "/" + IntegerToString(sig.tp_count) +
-                 " - TP: " + tpStr + ", Lot: " + DoubleToString(lotPerPosition, 3));
-
-        if (SendMarketOrder(symbol, sig.order_type, sl_price, tp_val, lotPerPosition, signalID))
-        {
-          successCount++;
-          totalVolume += lotPerPosition;
-          marketOrdersCreated++;
-          PrintLog("  ✓ Market order successful");
-        }
-        else
-        {
-          PrintLog("  ✗ Market order failed");
-          skippedOrders++;
-        }
-      }
-      else
-      {
-        // Send pending order
-        string pendingType = "Pending";
-        if (isLimitOrder)
-          pendingType = "Limit";
-        if (isStopOrder)
-          pendingType = "Stop";
-
-        PrintLog(pendingType + " Order " + IntegerToString(tpIndex + 1) + "/" + IntegerToString(sig.tp_count) +
-                 " - Price: " + DoubleToString(entryPrice, 2) +
-                 ", TP: " + tpStr + ", Lot: " + DoubleToString(lotPerPosition, 3));
-
-        if (SendPendingOrder(symbol, sig.order_type, entryPrice, sl_price, tp_val, lotPerPosition, signalID))
-        {
-          successCount++;
-          totalVolume += lotPerPosition;
-          pendingOrdersCreated++;
-          PrintLog("  ✓ " + pendingType + " order successful");
-        }
-        else
-        {
-          PrintLog("  ✗ " + pendingType + " order failed");
-          skippedOrders++;
-        }
-      }
-    }
-  }
-
-  // ================ EXECUTION SUMMARY ================
-  PrintLog("=========================================");
-  PrintLog("✅ EXECUTION COMPLETED");
-  PrintLog("=========================================");
-  PrintLog("Signal ID: " + signalID);
-  PrintLog("Symbol: " + symbol);
-  PrintLog("Order Type: " + sig.order_type);
-  PrintLog("Execution Mode: " + executionMode);
-  PrintLog("");
-  PrintLog("POSITION SUMMARY:");
-  PrintLog("  Expected: " + IntegerToString(totalExpectedPositions) + " positions");
-  PrintLog("  Created: " + IntegerToString(successCount) + " positions");
-  PrintLog("  Market Orders: " + IntegerToString(marketOrdersCreated));
-  PrintLog("  Pending Orders: " + IntegerToString(pendingOrdersCreated));
-  PrintLog("  Skipped/Failed: " + IntegerToString(skippedOrders));
-  PrintLog("");
-  PrintLog("VOLUME SUMMARY:");
-  PrintLog("  Total Volume: " + DoubleToString(totalVolume, 3) + " lots");
-  PrintLog("  Lot per Position: " + DoubleToString(lotPerPosition, 3) + " lots");
-  PrintLog("  Risk per Signal: $" + DoubleToString(totalRiskMoney, 2));
-  PrintLog("");
-  PrintLog("PRICE LEVELS:");
-  PrintLog("  Current Market: " + DoubleToString(currentMarketPrice, 2));
-  PrintLog("  Stop Loss: " + DoubleToString(sl_price, 2));
-  if (firstMarketIndex >= 0)
-    PrintLog("  First Market Price: " + DoubleToString(sig.prices_list[firstMarketIndex], 2) +
-             " (index " + IntegerToString(firstMarketIndex) + ")");
-  PrintLog("=========================================");
-
-  // ================ TELEGRAM NOTIFICATION ================
-  if (EnableTelegram && successCount > 0)
-  {
-    string telegramMsg = "📊 *Execution Report*\n\n";
-    telegramMsg += "🆔 Signal: `" + signalID + "`\n";
-    telegramMsg += "🏷️ Symbol: " + symbol + "\n";
-    telegramMsg += "📈 Type: " + sig.order_type + "\n";
-    telegramMsg += "🎯 Mode: " + executionMode + "\n\n";
-
-    telegramMsg += "✅ Positions: " + IntegerToString(successCount) + "/" +
-                   IntegerToString(totalExpectedPositions) + "\n";
-
-    if (marketOrdersCreated > 0)
-      telegramMsg += "🟢 Market: " + IntegerToString(marketOrdersCreated) + "\n";
-
-    if (pendingOrdersCreated > 0)
-      telegramMsg += "🟡 Pending: " + IntegerToString(pendingOrdersCreated) + "\n";
-
-    if (skippedOrders > 0)
-      telegramMsg += "🔴 Failed: " + IntegerToString(skippedOrders) + "\n";
-
-    telegramMsg += "\n💰 Volume: " + DoubleToString(totalVolume, 3) + " lots\n";
-    telegramMsg += "🔻 SL: " + DoubleToString(sl_price, 2) + "\n";
-
-    if (firstMarketIndex >= 0)
-      telegramMsg += "🎯 First Market: " + DoubleToString(sig.prices_list[firstMarketIndex], 2) + "\n";
-
-    telegramMsg += "\n⏰ " + TimeToString(TimeCurrent(), TIME_SECONDS);
-
-    SendSignalAlert(signalID, symbol, telegramMsg);
+    ApplyRiskManagement(ticket, symbol, symType);
   }
 }
 
@@ -999,6 +1663,7 @@ bool SendMarketOrder(string symbol, string order_type, double sl_price, double t
   request.action = TRADE_ACTION_DEAL;
   request.type = type;
   request.price = (type == ORDER_TYPE_BUY) ? ask : bid;
+
   // Adjust TP if exists
   if (tp_price > 0)
   {
@@ -1012,6 +1677,7 @@ bool SendMarketOrder(string symbol, string order_type, double sl_price, double t
     ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
     sl_price = AdjustSLPrice(sl_price, symbol, symType, order_type, true, false);
   }
+
   if (sl_price > 0)
     request.sl = sl_price;
   if (tp_price > 0)
@@ -1040,7 +1706,7 @@ bool SendMarketOrder(string symbol, string order_type, double sl_price, double t
 }
 
 //+------------------------------------------------------------------+
-//| Send Pending Order - COMPLETE REWRITE                          |
+//| Send Pending Order                                              |
 //+------------------------------------------------------------------+
 bool SendPendingOrder(string symbol, string order_type, double entryPrice, double sl_price, double tp_price, double lot, string signalID)
 {
@@ -1061,6 +1727,7 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
     sl_price = AdjustSLPrice(sl_price, symbol, symType, order_type, false, true);
   }
+
   // ================ INPUT VALIDATION ================
   PrintLog("Input Validation:");
 
@@ -1208,7 +1875,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
   {
     if (isLimitOrder)
     {
-      // Buy Limit must be BELOW current ask
       if (normalizedEntry >= ask)
       {
         PrintLog("❌ ERROR: Buy Limit price must be BELOW Ask!");
@@ -1220,7 +1886,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     }
     else if (isStopOrder)
     {
-      // Buy Stop must be ABOVE current ask
       if (normalizedEntry <= ask)
       {
         PrintLog("❌ ERROR: Buy Stop price must be ABOVE Ask!");
@@ -1235,7 +1900,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
   {
     if (isLimitOrder)
     {
-      // Sell Limit must be ABOVE current bid
       if (normalizedEntry <= bid)
       {
         PrintLog("❌ ERROR: Sell Limit price must be ABOVE Bid!");
@@ -1247,7 +1911,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     }
     else if (isStopOrder)
     {
-      // Sell Stop must be BELOW current bid
       if (normalizedEntry >= bid)
       {
         PrintLog("❌ ERROR: Sell Stop price must be BELOW Bid!");
@@ -1277,7 +1940,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     }
     else
     {
-      // Auto-detect: if entry > ask → Stop, else → Limit
       if (normalizedEntry > ask)
       {
         orderTypeEnum = ORDER_TYPE_BUY_STOP;
@@ -1306,7 +1968,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     }
     else
     {
-      // Auto-detect: if entry < bid → Stop, else → Limit
       if (normalizedEntry < bid)
       {
         orderTypeEnum = ORDER_TYPE_SELL_STOP;
@@ -1325,7 +1986,6 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
   // ================ STOP LEVELS VALIDATION ================
   PrintLog("\nStop Levels Validation:");
 
-  // Get minimum stop distance
   double stopsLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL) * point;
   double freezeLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_FREEZE_LEVEL) * point;
 
@@ -1493,13 +2153,11 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     PrintLog("  Request ID: " + IntegerToString(result.request_id));
     PrintLog("  Retcode: " + IntegerToString(result.retcode));
 
-    // Log order details for debugging
     if (OrderSelect(result.order))
     {
       PrintLog("  Order Details:");
       PrintLog("    Open Time: " + TimeToString(OrderGetInteger(ORDER_TIME_SETUP)));
       PrintLog("    State: " + EnumToString((ENUM_ORDER_STATE)OrderGetInteger(ORDER_STATE)));
-      PrintLog("    Time Expiration: " + (OrderGetInteger(ORDER_TIME_EXPIRATION) > 0 ? TimeToString(OrderGetInteger(ORDER_TIME_EXPIRATION)) : "None"));
     }
 
     return true;
@@ -1510,42 +2168,9 @@ bool SendPendingOrder(string symbol, string order_type, double entryPrice, doubl
     PrintLog("  Retcode: " + IntegerToString(result.retcode));
     PrintLog("  Error: " + result.comment);
 
-    // Detailed error analysis
     string errorDescription = GetTradeErrorDescription(result.retcode);
     if (errorDescription != "")
       PrintLog("  Description: " + errorDescription);
-
-    // Check for specific common errors
-    switch (result.retcode)
-    {
-    case 10004: // TRADE_RETCODE_REQUOTE
-      PrintLog("  Suggestion: Try again with updated prices");
-      break;
-
-    case 10006: // TRADE_RETCODE_REJECT
-      PrintLog("  Suggestion: Check order parameters and try again");
-      break;
-
-    case 10010: // TRADE_RETCODE_INVALID_PRICE
-      PrintLog("  Suggestion: Check price normalization and try again");
-      break;
-
-    case 10011: // TRADE_RETCODE_INVALID_STOPS
-      PrintLog("  Suggestion: Adjust SL/TP levels and try again");
-      break;
-
-    case 10012: // TRADE_RETCODE_INVALID_VOLUME
-      PrintLog("  Suggestion: Check volume constraints and try again");
-      break;
-
-    case 10014: // TRADE_RETCODE_NO_MONEY
-      PrintLog("  Suggestion: Increase account balance or reduce position size");
-      break;
-
-    case 10019: // TRADE_RETCODE_TOO_MANY_REQUESTS
-      PrintLog("  Suggestion: Wait and try again");
-      break;
-    }
 
     // Send Telegram alert for critical errors
     if (EnableTelegram && result.retcode >= 10006)
@@ -1663,1267 +2288,12 @@ string GetTradeErrorDescription(int retcode)
   default:
     return "";
   }
-} // ================ RISK MANAGEMENT FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Initialize Risk Management Settings                              |
-//+------------------------------------------------------------------+
-void InitializeRiskManagementSettings()
-{
-  // Gold settings
-  gold_settings.stage1_pips = Gold_Stage1_Pips;
-  gold_settings.stage1_close_percent = Gold_Stage1_ClosePercent;
-  gold_settings.stage2_pips = Gold_Stage2_Pips;
-  gold_settings.stage2_close_percent = Gold_Stage2_ClosePercent;
-  gold_settings.stage2_breakeven_pips = Gold_Stage2_BreakEvenPips;
-  gold_settings.stage3_pips = Gold_Stage3_Pips;
-  gold_settings.stage3_close_percent = Gold_Stage3_ClosePercent;
-  gold_settings.trailing_stop_pips = Gold_TrailingStopPips;
-  gold_settings.global_riskfree_pips = Gold_GlobalRiskFreePips;
-  gold_settings.riskfree_distance = Gold_RiskFreeDistance;
-  gold_settings.close_pending_at_profit = Gold_ClosePendingAtProfit;
-
-  // Dow Jones settings
-  dow_settings.stage1_pips = Dow_Stage1_Pips;
-  dow_settings.stage1_close_percent = Dow_Stage1_ClosePercent;
-  dow_settings.stage2_pips = Dow_Stage2_Pips;
-  dow_settings.stage2_close_percent = Dow_Stage2_ClosePercent;
-  dow_settings.stage2_breakeven_pips = Dow_Stage2_BreakEvenPips;
-  dow_settings.stage3_pips = Dow_Stage3_Pips;
-  dow_settings.stage3_close_percent = Dow_Stage3_ClosePercent;
-  dow_settings.trailing_stop_pips = Dow_TrailingStopPips;
-  dow_settings.global_riskfree_pips = Dow_GlobalRiskFreePips;
-  dow_settings.riskfree_distance = Dow_RiskFreeDistance;
-  dow_settings.close_pending_at_profit = Dow_ClosePendingAtProfit;
-
-  // NASDAQ settings
-  nas_settings.stage1_pips = Nas_Stage1_Pips;
-  nas_settings.stage1_close_percent = Nas_Stage1_ClosePercent;
-  nas_settings.stage2_pips = Nas_Stage2_Pips;
-  nas_settings.stage2_close_percent = Nas_Stage2_ClosePercent;
-  nas_settings.stage2_breakeven_pips = Nas_Stage2_BreakEvenPips;
-  nas_settings.stage3_pips = Nas_Stage3_Pips;
-  nas_settings.stage3_close_percent = Nas_Stage3_ClosePercent;
-  nas_settings.trailing_stop_pips = Nas_TrailingStopPips;
-  nas_settings.global_riskfree_pips = Nas_GlobalRiskFreePips;
-  nas_settings.riskfree_distance = Nas_RiskFreeDistance;
-  nas_settings.close_pending_at_profit = Nas_ClosePendingAtProfit;
-
-  // Forex settings
-  forex_settings.stage1_pips = Forex_Stage1_Pips;
-  forex_settings.stage1_close_percent = Forex_Stage1_ClosePercent;
-  forex_settings.stage2_pips = Forex_Stage2_Pips;
-  forex_settings.stage2_close_percent = Forex_Stage2_ClosePercent;
-  forex_settings.stage2_breakeven_pips = Forex_Stage2_BreakEvenPips;
-  forex_settings.stage3_pips = Forex_Stage3_Pips;
-  forex_settings.stage3_close_percent = Forex_Stage3_ClosePercent;
-  forex_settings.trailing_stop_pips = Forex_TrailingStopPips;
-  forex_settings.global_riskfree_pips = Forex_GlobalRiskFreePips;
-  forex_settings.riskfree_distance = Forex_RiskFreeDistance;
-  forex_settings.close_pending_at_profit = Forex_ClosePendingAtProfit;
-}
-
-//+------------------------------------------------------------------+
-//| Get Risk Management Settings                                     |
-//+------------------------------------------------------------------+
-SymbolSettings GetRiskManagementSettings(ENUM_SYMBOL_TYPE symType)
-{
-  SymbolSettings settings;
-
-  switch (symType)
-  {
-  case SYMBOL_TYPE_GOLD:
-    settings.max_lot = gold_settings.max_lot;
-    settings.default_sl_pips = gold_settings.default_sl_pips;
-    settings.default_tp_pips = gold_settings.default_tp_pips;
-    settings.max_slippage_pips = gold_settings.max_slippage_pips;
-    settings.pending_distance_pips = gold_settings.pending_distance_pips;
-    settings.stage1_pips = gold_settings.stage1_pips;
-    settings.stage1_close_percent = gold_settings.stage1_close_percent;
-    settings.stage2_pips = gold_settings.stage2_pips;
-    settings.stage2_close_percent = gold_settings.stage2_close_percent;
-    settings.stage2_breakeven_pips = gold_settings.stage2_breakeven_pips;
-    settings.stage3_pips = gold_settings.stage3_pips;
-    settings.stage3_close_percent = gold_settings.stage3_close_percent;
-    settings.trailing_stop_pips = gold_settings.trailing_stop_pips;
-    settings.global_riskfree_pips = gold_settings.global_riskfree_pips;
-    settings.riskfree_distance = gold_settings.riskfree_distance;
-    settings.close_pending_at_profit = gold_settings.close_pending_at_profit;
-    break;
-
-  case SYMBOL_TYPE_DOW:
-    settings.max_lot = dow_settings.max_lot;
-    settings.default_sl_pips = dow_settings.default_sl_pips;
-    settings.default_tp_pips = dow_settings.default_tp_pips;
-    settings.max_slippage_pips = dow_settings.max_slippage_pips;
-    settings.pending_distance_pips = dow_settings.pending_distance_pips;
-    settings.stage1_pips = dow_settings.stage1_pips;
-    settings.stage1_close_percent = dow_settings.stage1_close_percent;
-    settings.stage2_pips = dow_settings.stage2_pips;
-    settings.stage2_close_percent = dow_settings.stage2_close_percent;
-    settings.stage2_breakeven_pips = dow_settings.stage2_breakeven_pips;
-    settings.stage3_pips = dow_settings.stage3_pips;
-    settings.stage3_close_percent = dow_settings.stage3_close_percent;
-    settings.trailing_stop_pips = dow_settings.trailing_stop_pips;
-    settings.global_riskfree_pips = dow_settings.global_riskfree_pips;
-    settings.riskfree_distance = dow_settings.riskfree_distance;
-    settings.close_pending_at_profit = dow_settings.close_pending_at_profit;
-    break;
-
-  case SYMBOL_TYPE_NASDAQ:
-    settings.max_lot = nas_settings.max_lot;
-    settings.default_sl_pips = nas_settings.default_sl_pips;
-    settings.default_tp_pips = nas_settings.default_tp_pips;
-    settings.max_slippage_pips = nas_settings.max_slippage_pips;
-    settings.pending_distance_pips = nas_settings.pending_distance_pips;
-    settings.stage1_pips = nas_settings.stage1_pips;
-    settings.stage1_close_percent = nas_settings.stage1_close_percent;
-    settings.stage2_pips = nas_settings.stage2_pips;
-    settings.stage2_close_percent = nas_settings.stage2_close_percent;
-    settings.stage2_breakeven_pips = nas_settings.stage2_breakeven_pips;
-    settings.stage3_pips = nas_settings.stage3_pips;
-    settings.stage3_close_percent = nas_settings.stage3_close_percent;
-    settings.trailing_stop_pips = nas_settings.trailing_stop_pips;
-    settings.global_riskfree_pips = nas_settings.global_riskfree_pips;
-    settings.riskfree_distance = nas_settings.riskfree_distance;
-    settings.close_pending_at_profit = nas_settings.close_pending_at_profit;
-    break;
-
-  case SYMBOL_TYPE_FOREX:
-  default:
-    settings.max_lot = forex_settings.max_lot;
-    settings.default_sl_pips = forex_settings.default_sl_pips;
-    settings.default_tp_pips = forex_settings.default_tp_pips;
-    settings.max_slippage_pips = forex_settings.max_slippage_pips;
-    settings.pending_distance_pips = forex_settings.pending_distance_pips;
-    settings.stage1_pips = forex_settings.stage1_pips;
-    settings.stage1_close_percent = forex_settings.stage1_close_percent;
-    settings.stage2_pips = forex_settings.stage2_pips;
-    settings.stage2_close_percent = forex_settings.stage2_close_percent;
-    settings.stage2_breakeven_pips = forex_settings.stage2_breakeven_pips;
-    settings.stage3_pips = forex_settings.stage3_pips;
-    settings.stage3_close_percent = forex_settings.stage3_close_percent;
-    settings.trailing_stop_pips = forex_settings.trailing_stop_pips;
-    settings.global_riskfree_pips = forex_settings.global_riskfree_pips;
-    settings.riskfree_distance = forex_settings.riskfree_distance;
-    settings.close_pending_at_profit = forex_settings.close_pending_at_profit;
-    break;
-  }
-
-  return settings;
-}
-
-//+------------------------------------------------------------------+
-//| Initialize Risk Data for New Position                            |
-//+------------------------------------------------------------------+
-void InitializeRiskDataForPosition(ulong ticket, string signalID, double entryPrice, double slPrice, double tpPrice)
-{
-  // Check if already exists
-  for (int i = 0; i < risk_data_count; i++)
-  {
-    if (risk_data_array[i].ticket == ticket)
-    {
-      // Update existing entry
-      risk_data_array[i].entry_price = entryPrice;
-      risk_data_array[i].original_sl = slPrice;
-      risk_data_array[i].original_tp = tpPrice;
-      risk_data_array[i].current_sl = slPrice;
-      risk_data_array[i].stage_completed = 0;
-      risk_data_array[i].risk_free_active = false;
-      risk_data_array[i].best_price = entryPrice;
-      risk_data_array[i].last_check = TimeCurrent();
-      risk_data_array[i].pending_closed = false;
-      return;
-    }
-  }
-
-  // Add new entry if there's space
-  if (risk_data_count < ArraySize(risk_data_array))
-  {
-    risk_data_array[risk_data_count].ticket = ticket;
-    risk_data_array[risk_data_count].signal_id = signalID;
-    risk_data_array[risk_data_count].entry_price = entryPrice;
-    risk_data_array[risk_data_count].original_sl = slPrice;
-    risk_data_array[risk_data_count].original_tp = tpPrice;
-    risk_data_array[risk_data_count].current_sl = slPrice;
-    risk_data_array[risk_data_count].stage_completed = 0;
-    risk_data_array[risk_data_count].risk_free_active = false;
-    risk_data_array[risk_data_count].best_price = entryPrice;
-    risk_data_array[risk_data_count].last_check = TimeCurrent();
-    risk_data_array[risk_data_count].pending_closed = false;
-
-    risk_data_count++;
-    PrintLog("Risk data initialized for ticket: " + IntegerToString((long)ticket) + " Signal: " + signalID);
-  }
-  else
-  {
-    PrintLog("Warning: Risk data array is full. Cannot add ticket: " + IntegerToString((long)ticket));
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Update Risk Data for Position                                    |
-//+------------------------------------------------------------------+
-void UpdateRiskDataForPosition(ulong ticket, double currentPrice)
-{
-  for (int i = 0; i < risk_data_count; i++)
-  {
-    if (risk_data_array[i].ticket == ticket)
-    {
-      // Get position type
-      if (PositionSelectByTicket(ticket))
-      {
-        long position_type = PositionGetInteger(POSITION_TYPE);
-
-        // Update best price for trailing stop
-        if (position_type == POSITION_TYPE_BUY)
-        {
-          if (currentPrice > risk_data_array[i].best_price)
-            risk_data_array[i].best_price = currentPrice;
-        }
-        else if (position_type == POSITION_TYPE_SELL)
-        {
-          if (currentPrice < risk_data_array[i].best_price)
-            risk_data_array[i].best_price = currentPrice;
-        }
-
-        risk_data_array[i].last_check = TimeCurrent();
-      }
-      break;
-    }
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Manage Risk for All Open Positions                               |
-//+------------------------------------------------------------------+
-void ManageRiskForOpenPositions()
-{
-  if (!EnableRiskManagement)
-    return;
-
-  for (int i = PositionsTotal() - 1; i >= 0; i--)
-  {
-    ulong ticket = PositionGetTicket(i);
-    if (ticket <= 0)
-      continue;
-
-    long magic = PositionGetInteger(POSITION_MAGIC);
-    if (magic != ExpertMagicNumber)
-      continue;
-
-    string symbol = PositionGetString(POSITION_SYMBOL);
-    ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
-
-    ApplyRiskManagement(ticket, symbol, symType);
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Apply Risk Management to Position                                |
-//+------------------------------------------------------------------+
-void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
-{
-  if (!PositionSelectByTicket(ticket))
-    return;
-
-  double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-  double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-  double currentSL = PositionGetDouble(POSITION_SL);
-  long position_type = PositionGetInteger(POSITION_TYPE);
-  bool isBuy = (position_type == POSITION_TYPE_BUY);
-
-  // Get signal ID from comment
-  string comment = PositionGetString(POSITION_COMMENT);
-  string signalID = "";
-  int sidPos = StringFind(comment, "SID:");
-  if (sidPos >= 0)
-  {
-    string idPart = StringSubstr(comment, sidPos + 4);
-    int space = StringFind(idPart, " ");
-    if (space > 0)
-      signalID = StringSubstr(idPart, 0, space);
-    else
-      signalID = idPart;
-  }
-
-  if (StringLen(signalID) == 0)
-    return;
-
-  // محاسبه سود بر حسب پیپ
-  ENUM_SYMBOL_TYPE symTypeLocal = GetSymbolType(symbol);
-  double profitPips = CalculatePipsProfit(entryPrice, currentPrice, isBuy, symbol, symTypeLocal);
-  if (profitPips <= 0)
-    return; // پوزیشن در ضرر است - مدیریت ریسک اعمال نشود
-  // Get risk management settings
-  SymbolSettings riskSettings = GetRiskManagementSettings(symType);
-
-  // Update risk data
-  UpdateRiskDataForPosition(ticket, currentPrice);
-
-  // Find risk data for this position
-  int riskIndex = -1;
-  for (int i = 0; i < risk_data_count; i++)
-  {
-    if (risk_data_array[i].ticket == ticket)
-    {
-      riskIndex = i;
-      break;
-    }
-  }
-
-  if (riskIndex == -1)
-  {
-    // Initialize risk data if not exists
-    InitializeRiskDataForPosition(ticket, signalID, entryPrice, currentSL, PositionGetDouble(POSITION_TP));
-    // Find it again
-    for (int i = 0; i < risk_data_count; i++)
-    {
-      if (risk_data_array[i].ticket == ticket)
-      {
-        riskIndex = i;
-        break;
-      }
-    }
-  }
-
-  if (riskIndex == -1)
-    return;
-
-  // Check if we should close pending orders
-  if (ClosePendingOnProfit && !risk_data_array[riskIndex].pending_closed &&
-      profitPips >= riskSettings.close_pending_at_profit)
-  {
-    // Close all pending orders for this signal
-    ClosePendingOrdersForSignal(signalID, "Profit target reached: " + DoubleToString(profitPips, 1) + " pips");
-    risk_data_array[riskIndex].pending_closed = true;
-  }
-
-  // Check global risk-free condition
-  if (profitPips >= riskSettings.global_riskfree_pips && !risk_data_array[riskIndex].risk_free_active)
-  {
-    ApplyGlobalRiskFree(ticket, entryPrice, riskSettings.global_riskfree_pips, riskSettings.riskfree_distance, isBuy, symbol);
-    risk_data_array[riskIndex].risk_free_active = true;
-    risk_data_array[riskIndex].stage_completed = 3;
-
-    if (EnableTelegram)
-      SendRiskManagementAlert(symbol, signalID, 4, "Global Risk-Free Activated", profitPips);
-
-    return;
-  }
-
-  // Stage 3: 25+ pips profit
-  if (profitPips >= riskSettings.stage3_pips && risk_data_array[riskIndex].stage_completed < 3)
-  {
-    // Close 20% of position
-    ClosePartialPosition(ticket, riskSettings.stage3_close_percent, "Stage 3 Profit Taking");
-
-    // Apply trailing stop
-    ApplyTrailingStop(ticket, currentPrice, riskSettings.trailing_stop_pips, isBuy, symbol);
-
-    risk_data_array[riskIndex].stage_completed = 3;
-
-    if (EnableTelegram)
-      SendRiskManagementAlert(symbol, signalID, 3, "Stage 3: Partial Close + Trailing Stop", profitPips);
-  }
-  // Stage 2: 20+ pips profit
-  else if (profitPips >= riskSettings.stage2_pips && risk_data_array[riskIndex].stage_completed < 2)
-  {
-    // Close 15% of position
-    ClosePartialPosition(ticket, riskSettings.stage2_close_percent, "Stage 2 Profit Taking");
-
-    // Move to break-even +5 pips
-    MoveToBreakEven(ticket, entryPrice, riskSettings.stage2_breakeven_pips, isBuy, symbol);
-
-    risk_data_array[riskIndex].stage_completed = 2;
-
-    if (EnableTelegram)
-      SendRiskManagementAlert(symbol, signalID, 2, "Stage 2: Partial Close + Break-Even", profitPips);
-  }
-  // Stage 1: 10+ pips profit
-  else if (profitPips >= riskSettings.stage1_pips && risk_data_array[riskIndex].stage_completed < 1)
-  {
-    // Close 10% of position
-    ClosePartialPosition(ticket, riskSettings.stage1_close_percent, "Stage 1 Profit Taking");
-
-    risk_data_array[riskIndex].stage_completed = 1;
-
-    if (EnableTelegram)
-      SendRiskManagementAlert(symbol, signalID, 1, "Stage 1: Partial Close", profitPips);
-  }
-
-  // Apply trailing stop if stage 3 is active
-  if (risk_data_array[riskIndex].stage_completed >= 3)
-  {
-    ApplyTrailingStop(ticket, risk_data_array[riskIndex].best_price, riskSettings.trailing_stop_pips, isBuy, symbol);
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Close Pending Orders for Signal                                  |
-//+------------------------------------------------------------------+
-void ClosePendingOrdersForSignal(string signalID, string reason)
-{
-  if (StringLen(signalID) == 0)
-    return;
-
-  int deletedOrders = 0;
-
-  for (int i = OrdersTotal() - 1; i >= 0; i--)
-  {
-    ulong ticket = OrderGetTicket(i);
-    if (ticket <= 0)
-      continue;
-
-    long magic = OrderGetInteger(ORDER_MAGIC);
-    if (magic != ExpertMagicNumber)
-      continue;
-
-    string cmt = OrderGetString(ORDER_COMMENT);
-    if (StringFind(cmt, "SID:" + signalID) >= 0)
-    {
-      trade.OrderDelete(ticket);
-      deletedOrders++;
-      PrintLog("Deleted Pending Order " + IntegerToString((long)ticket) + " for Signal " + signalID + " - Reason: " + reason);
-    }
-  }
-
-  if (deletedOrders > 0 && EnableTelegram)
-  {
-    string message = "🗑️ *Pending Orders Closed*\n\n";
-    message += "#SID_" + signalID + "\n";
-    message += "🔸 Reason: " + reason + "\n";
-    message += "🔸 Orders Deleted: " + IntegerToString(deletedOrders) + "\n";
-    message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
-
-    SendTelegramFarsi(message);
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Close Partial Position                                           |
-//+------------------------------------------------------------------+
-void ClosePartialPosition(ulong ticket, double percent, string reason)
-{
-  if (!PositionSelectByTicket(ticket))
-    return;
-
-  double volume = PositionGetDouble(POSITION_VOLUME);
-  double closeVolume = volume * percent / 100.0;
-
-  // Normalize volume
-  string symbol = PositionGetString(POSITION_SYMBOL);
-  closeVolume = NormalizeLotToSymbol(closeVolume, symbol);
-
-  if (closeVolume <= 0)
-    return;
-
-  // Check if we can close partial position
-  double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-  if (closeVolume < minLot)
-  {
-    PrintLog("Cannot close partial: " + DoubleToString(closeVolume, 2) + " < min lot " + DoubleToString(minLot, 2));
-    return;
-  }
-
-  // Close partial position using CTrade
-  trade.PositionClosePartial(ticket, closeVolume);
-
-  PrintLog("Partial close: " + DoubleToString(closeVolume, 2) + " lots (" + DoubleToString(percent, 1) + "%) - " + reason);
-}
-
-// ================ TELEGRAM FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Send Signal Alert                                                |
-//+------------------------------------------------------------------+
-void SendSignalAlert(string signalID, string symbol, string message)
-{
-  if (!EnableTelegram)
-    return;
-
-  string fullMessage = "📢 *Signal Alert*\n\n";
-  fullMessage += "#SID_" + signalID + "\n";
-  fullMessage += "🏷️ Symbol: " + symbol + "\n";
-  fullMessage += message + "\n";
-  fullMessage += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
-
-  SendTelegramFarsi(fullMessage);
-}
-
-//+------------------------------------------------------------------+
-//| Move to Break-Even                                               |
-//+------------------------------------------------------------------+
-void MoveToBreakEven(ulong ticket, double entryPrice, int breakEvenPips, bool isBuy, string symbol)
-{
-  if (!PositionSelectByTicket(ticket))
-    return;
-
-  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
-
-  // Adjust pips to points
-  double breakEvenPoints = breakEvenPips * point;
-  if (symType == SYMBOL_TYPE_GOLD)
-    breakEvenPoints = breakEvenPips * point * 10.0;
-  else if (symType == SYMBOL_TYPE_FOREX)
-    breakEvenPoints = breakEvenPips * point * 10.0;
-
-  double newSL = 0;
-  if (isBuy)
-  {
-    newSL = entryPrice + breakEvenPoints; // For BUY, SL above entry
-  }
-  else
-  {
-    newSL = entryPrice - breakEvenPoints; // For SELL, SL below entry
-  }
-
-  // Modify position
-  trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
-
-  PrintLog("Break-even SL set: " + DoubleToString(newSL, 5) + " (" + IntegerToString(breakEvenPips) + " pips from entry)");
-}
-
-//+------------------------------------------------------------------+
-//| Apply Trailing Stop                                              |
-//+------------------------------------------------------------------+
-void ApplyTrailingStop(ulong ticket, double currentPrice, int trailingPips, bool isBuy, string symbol)
-{
-  if (!PositionSelectByTicket(ticket))
-    return;
-
-  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
-  double currentSL = PositionGetDouble(POSITION_SL);
-
-  // Adjust pips to points
-  double trailingPoints = trailingPips * point;
-  if (symType == SYMBOL_TYPE_GOLD)
-    trailingPoints = trailingPips * point * 10.0;
-  else if (symType == SYMBOL_TYPE_FOREX)
-    trailingPoints = trailingPips * point * 10.0;
-
-  double newSL = currentSL;
-
-  if (isBuy)
-  {
-    // For BUY: SL = currentPrice - trailingPips
-    double proposedSL = currentPrice - trailingPoints;
-    if (proposedSL > currentSL && proposedSL > PositionGetDouble(POSITION_PRICE_OPEN))
-    {
-      newSL = proposedSL;
-    }
-  }
-  else
-  {
-    // For SELL: SL = currentPrice + trailingPips
-    double proposedSL = currentPrice + trailingPoints;
-    if (proposedSL < currentSL && proposedSL < PositionGetDouble(POSITION_PRICE_OPEN))
-    {
-      newSL = proposedSL;
-    }
-  }
-
-  // Modify if SL changed
-  if (newSL != currentSL)
-  {
-    trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
-    PrintLog("Trailing stop updated: " + DoubleToString(newSL, 5));
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Apply Global Risk-Free                                           |
-//+------------------------------------------------------------------+
-void ApplyGlobalRiskFree(ulong ticket, double entryPrice, int riskFreePips, int riskFreeDistance, bool isBuy, string symbol)
-{
-  if (!PositionSelectByTicket(ticket))
-    return;
-
-  // Check if position is in profit
-  double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-  double profit = PositionGetDouble(POSITION_PROFIT);
-
-  if (profit <= 0)
-    return; // Only apply risk-free if in profit
-
-  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
-
-  // Adjust pips to points
-  double riskFreePoints = riskFreeDistance * point;
-  if (symType == SYMBOL_TYPE_GOLD)
-    riskFreePoints = riskFreeDistance * point * 10.0;
-  else if (symType == SYMBOL_TYPE_FOREX)
-    riskFreePoints = riskFreeDistance * point * 10.0;
-
-  double newSL = 0;
-  if (isBuy)
-  {
-    newSL = entryPrice + riskFreePoints; // For BUY, SL 10 pips above entry
-  }
-  else
-  {
-    newSL = entryPrice - riskFreePoints; // For SELL, SL 10 pips below entry
-  }
-
-  // Modify position
-  trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
-
-  PrintLog("Global Risk-Free Activated: SL = " + DoubleToString(newSL, 5) +
-           " (Profit: " + DoubleToString(profit, 2) + ")");
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Pips Profit CORRECTED                                  |
-//+------------------------------------------------------------------+
-double CalculatePipsProfit(double entryPrice, double currentPrice, bool isBuy, string symbol, ENUM_SYMBOL_TYPE symType)
-{
-  // Get point value correctly
-  double point = 0;
-  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
-  {
-    PrintLog("ERROR: Cannot get point value for " + symbol);
-    return 0;
-  }
-
-  // محاسبه صحیح سود/ضرر بر اساس جهت پوزیشن
-  double priceDiff = 0;
-
-  if (isBuy) // برای پوزیشن Buy
-  {
-    priceDiff = currentPrice - entryPrice; // اگر مثبت → سود، اگر منفی → ضرر
-  }
-  else // برای پوزیشن Sell
-  {
-    priceDiff = entryPrice - currentPrice; // اگر مثبت → سود، اگر منفی → ضرر
-  }
-
-  double pips = priceDiff / point;
-
-  // Adjust for symbol type
-  if (symType == SYMBOL_TYPE_GOLD)
-    pips = pips / 10.0; // For gold, 0.10 = 1 pip
-  else if (symType == SYMBOL_TYPE_DOW || symType == SYMBOL_TYPE_NASDAQ)
-    pips = pips; // For indices, 1 point = 1 pip
-  else
-    pips = pips / 10.0; // For forex, 0.00010 = 1 pip
-
-  PrintLog("Profit Calc: Entry=" + DoubleToString(entryPrice, 2) +
-           ", Current=" + DoubleToString(currentPrice, 2) +
-           ", isBuy=" + (isBuy ? "true" : "false") +
-           ", RawDiff=" + DoubleToString(priceDiff, 2) +
-           ", Pips=" + DoubleToString(pips, 1));
-
-  return pips;
-}
-// ================ TELEGRAM ALERT FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Send Risk Management Alert                                       |
-//+------------------------------------------------------------------+
-void SendRiskManagementAlert(string symbol, string signalID, int stage, string action, double profitPips)
-{
-  if (!EnableTelegram)
-    return;
-
-  string stageNames[] = {"", "Stage 1", "Stage 2", "Stage 3", "Global Risk-Free"};
-
-  string message = "🛡️ *Risk Management Alert*\n\n";
-  message += "🏷️ Symbol: " + symbol + "\n";
-  message += "🆔 Signal ID: `" + signalID + "`\n";
-  message += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
-  message += "🔰 Stage: " + stageNames[stage] + "\n";
-  message += "✅ Action: " + action + "\n";
-  message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
-
-  SendTelegramFarsi(message);
-}
-
-// ================ SYMBOL MANAGEMENT FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Initialize Symbol Settings                                       |
-//+------------------------------------------------------------------+
-void InitializeSymbolSettings()
-{
-  gold_settings.max_lot = MaxLotSize_GOLD;
-  gold_settings.default_sl_pips = DefaultStopPips_GOLD;
-  gold_settings.default_tp_pips = DefaultTpForOpenPips_GOLD;
-  gold_settings.max_slippage_pips = MaxSlippageForMarketPips_GOLD;
-  gold_settings.pending_distance_pips = PendingOrderDistanceFromSL_GOLD;
-
-  dow_settings.max_lot = MaxLotSize_DOW;
-  dow_settings.default_sl_pips = DefaultStopPips_DOW;
-  dow_settings.default_tp_pips = DefaultTpForOpenPips_DOW;
-  dow_settings.max_slippage_pips = MaxSlippageForMarketPips_DOW;
-  dow_settings.pending_distance_pips = PendingOrderDistanceFromSL_DOW;
-
-  nas_settings.max_lot = MaxLotSize_NAS;
-  nas_settings.default_sl_pips = DefaultStopPips_NAS;
-  nas_settings.default_tp_pips = DefaultTpForOpenPips_NAS;
-  nas_settings.max_slippage_pips = MaxSlippageForMarketPips_NAS;
-  nas_settings.pending_distance_pips = PendingOrderDistanceFromSL_NAS;
-
-  forex_settings.max_lot = MaxLotSize_FOREX;
-  forex_settings.default_sl_pips = DefaultStopPips_FOREX;
-  forex_settings.default_tp_pips = DefaultTpForOpenPips_FOREX;
-  forex_settings.max_slippage_pips = MaxSlippageForMarketPips_FOREX;
-  forex_settings.pending_distance_pips = PendingOrderDistanceFromSL_FOREX;
-}
-
-//+------------------------------------------------------------------+
-//| Get Symbol Type                                                  |
-//+------------------------------------------------------------------+
-ENUM_SYMBOL_TYPE GetSymbolType(string symbol)
-{
-  string symLower = StringToLowerCustom(symbol);
-
-  if (StringFind(symLower, "xau") >= 0 || StringFind(symLower, "gold") >= 0 ||
-      StringFind(symLower, "XAUUSD") >= 0 || StringFind(symLower, "XAUUSD_o") >= 0)
-    return SYMBOL_TYPE_GOLD;
-
-  if (StringFind(symLower, "us30") >= 0 || StringFind(symLower, "dow") >= 0 ||
-      StringFind(symLower, "dj") >= 0 || StringFind(symLower, "yinusd") >= 0 || StringFind(symLower, "ym") >= 0)
-    return SYMBOL_TYPE_DOW;
-
-  if (StringFind(symLower, "nas100") >= 0 || StringFind(symLower, "nas") >= 0 ||
-      StringFind(symLower, "nq") >= 0 || StringFind(symLower, "ustec") >= 0)
-    return SYMBOL_TYPE_NASDAQ;
-
-  return SYMBOL_TYPE_FOREX;
-}
-
-//+------------------------------------------------------------------+
-//| Get Symbol Settings                                              |
-//+------------------------------------------------------------------+
-SymbolSettings GetSymbolSettings(ENUM_SYMBOL_TYPE symType)
-{
-  SymbolSettings settings;
-
-  switch (symType)
-  {
-  case SYMBOL_TYPE_GOLD:
-    settings.max_lot = gold_settings.max_lot;
-    settings.default_sl_pips = gold_settings.default_sl_pips;
-    settings.default_tp_pips = gold_settings.default_tp_pips;
-    settings.max_slippage_pips = gold_settings.max_slippage_pips;
-    settings.pending_distance_pips = gold_settings.pending_distance_pips;
-    break;
-
-  case SYMBOL_TYPE_DOW:
-    settings.max_lot = dow_settings.max_lot;
-    settings.default_sl_pips = dow_settings.default_sl_pips;
-    settings.default_tp_pips = dow_settings.default_tp_pips;
-    settings.max_slippage_pips = dow_settings.max_slippage_pips;
-    settings.pending_distance_pips = dow_settings.pending_distance_pips;
-    break;
-
-  case SYMBOL_TYPE_NASDAQ:
-    settings.max_lot = nas_settings.max_lot;
-    settings.default_sl_pips = nas_settings.default_sl_pips;
-    settings.default_tp_pips = nas_settings.default_tp_pips;
-    settings.max_slippage_pips = nas_settings.max_slippage_pips;
-    settings.pending_distance_pips = nas_settings.pending_distance_pips;
-    break;
-
-  case SYMBOL_TYPE_FOREX:
-  default:
-    settings.max_lot = forex_settings.max_lot;
-    settings.default_sl_pips = forex_settings.default_sl_pips;
-    settings.default_tp_pips = forex_settings.default_tp_pips;
-    settings.max_slippage_pips = forex_settings.max_slippage_pips;
-    settings.pending_distance_pips = forex_settings.pending_distance_pips;
-    break;
-  }
-
-  return settings;
-}
-
-//+------------------------------------------------------------------+
-//| Get Symbol Type Name                                             |
-//+------------------------------------------------------------------+
-string GetSymbolTypeName(ENUM_SYMBOL_TYPE symType)
-{
-  switch (symType)
-  {
-  case SYMBOL_TYPE_GOLD:
-    return "GOLD";
-  case SYMBOL_TYPE_DOW:
-    return "DOW JONES";
-  case SYMBOL_TYPE_NASDAQ:
-    return "NASDAQ";
-  case SYMBOL_TYPE_FOREX:
-    return "FOREX";
-  default:
-    return "UNKNOWN";
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Pending Price                                          |
-//+------------------------------------------------------------------+
-double CalculatePendingPrice(string orderType, double slPrice, double currentPrice, string symbol, int distancePips, ENUM_SYMBOL_TYPE symType, bool isBuy)
-{
-  // Get point value correctly
-  double point = 0;
-  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
-  {
-    PrintLog("ERROR: Cannot get point value for " + symbol);
-    return 0;
-  }
-
-  double multiplier = 1.0;
-
-  switch (symType)
-  {
-  case SYMBOL_TYPE_GOLD:
-    multiplier = 10.0;
-    break;
-  case SYMBOL_TYPE_DOW:
-  case SYMBOL_TYPE_NASDAQ:
-    multiplier = 1.0;
-    break;
-  case SYMBOL_TYPE_FOREX:
-    multiplier = 10.0;
-    break;
-  default:
-    multiplier = 10.0;
-    break;
-  }
-
-  double distancePoints = distancePips * point * multiplier;
-
-  if (isBuy)
-  {
-    return slPrice + distancePoints;
-  }
-  else
-  {
-    return slPrice - distancePoints;
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Default SL                                             |
-//+------------------------------------------------------------------+
-double CalculateDefaultSL(string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, double currentPrice, bool isBuy)
-{
-  // Get point value correctly
-  double point = 0;
-  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
-  {
-    PrintLog("ERROR: Cannot get point value for " + symbol);
-    return 0;
-  }
-
-  double pips = settings.default_sl_pips;
-
-  if (symType == SYMBOL_TYPE_GOLD)
-    pips = pips * 10.0;
-  else if (symType == SYMBOL_TYPE_DOW || symType == SYMBOL_TYPE_NASDAQ)
-    pips = pips;
-  else
-    pips = pips / 10.0;
-
-  double dist = pips * point;
-  return isBuy ? currentPrice - dist : currentPrice + dist;
-}
-//+------------------------------------------------------------------+
-//| Calculate Position Size                                          |
-//+------------------------------------------------------------------+
-double CalculatePositionSize(string symbol, double totalRiskMoney, double distSL)
-{
-  double lot = 0.01;
-  double ptVal = EstimatePipValuePerLot(symbol);
-  double ptSize = SymbolInfoDouble(symbol, SYMBOL_POINT);
-
-  if (distSL > 0 && ptVal > 0 && ptSize > 0)
-  {
-    double distPoints = distSL / ptSize;
-    lot = totalRiskMoney / (distPoints * ptVal);
-  }
-
-  return lot;
-}
-
-//+------------------------------------------------------------------+
-//| Get First TP (Simplified version)                               |
-//+------------------------------------------------------------------+
-double GetFirstTP(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType,
-                  SymbolSettings &settings, double referencePrice, bool isBuy,
-                  string orderType = "", bool isMarketOrder = false, bool isPendingOrder = false)
-{
-  double firstTP = (sig.tp_count > 0) ? sig.tp_list[0] : 0;
-
-  // اگر TP در سیگنال وجود داشت
-  if (firstTP > 0)
-  {
-    // اعمال تعدیل اگر لازم باشد
-    if (orderType != "" && (isMarketOrder || isPendingOrder))
-    {
-      firstTP = AdjustTPPrice(firstTP, symbol, symType, orderType, isMarketOrder, isPendingOrder);
-    }
-    return firstTP;
-  }
-
-  // محاسبه TP پیش‌فرض
-  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-  double pips = settings.default_tp_pips;
-
-  // Adjust for symbol type
-  if (symType == SYMBOL_TYPE_GOLD)
-    pips = pips * 10.0;
-  else if (symType == SYMBOL_TYPE_FOREX)
-    pips = pips / 10.0;
-
-  double dist = pips * point;
-  firstTP = isBuy ? referencePrice + dist : referencePrice - dist;
-
-  // اعمال تعدیل روی TP پیش‌فرض
-  if (orderType != "" && (isMarketOrder || isPendingOrder))
-  {
-    firstTP = AdjustTPPrice(firstTP, symbol, symType, orderType, isMarketOrder, isPendingOrder);
-  }
-
-  return firstTP;
-}
-// ================ ORDER MANAGEMENT FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Send Order                                                       |
-//+------------------------------------------------------------------+
-bool SendOrder(string symbol, string order_type, bool isMarket, double entryPrice, double sl_price, double tp_price, double lot, string signalID)
-{
-  MqlTradeRequest request;
-  MqlTradeResult result;
-  ZeroMemory(request);
-  ZeroMemory(result);
-
-  int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-  double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-  if (tickSize == 0)
-    tickSize = SymbolInfoDouble(symbol, SYMBOL_POINT);
-
-  if (entryPrice > 0)
-    entryPrice = MathRound(entryPrice / tickSize) * tickSize;
-  if (sl_price > 0)
-    sl_price = MathRound(sl_price / tickSize) * tickSize;
-  if (tp_price > 0)
-    tp_price = MathRound(tp_price / tickSize) * tickSize;
-
-  ENUM_ORDER_TYPE type = (StringCompare(order_type, "sell", false) == 0) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-
-  request.symbol = symbol;
-  request.volume = lot;
-  request.deviation = 50;
-  request.magic = ExpertMagicNumber;
-  request.comment = "SID:" + signalID;
-  request.type_time = ORDER_TIME_GTC;
-  request.type_filling = ORDER_FILLING_FOK;
-
-  double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-  double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-
-  if (isMarket)
-  {
-    request.action = TRADE_ACTION_DEAL;
-    request.type = type;
-    request.price = (type == ORDER_TYPE_BUY) ? ask : bid;
-  }
-  else
-  {
-    request.action = TRADE_ACTION_PENDING;
-    request.price = entryPrice;
-
-    if (type == ORDER_TYPE_BUY)
-    {
-      if (entryPrice > ask)
-        request.type = ORDER_TYPE_BUY_STOP;
-      else
-        request.type = ORDER_TYPE_BUY_LIMIT;
-    }
-    else
-    {
-      if (entryPrice < bid)
-        request.type = ORDER_TYPE_SELL_STOP;
-      else
-        request.type = ORDER_TYPE_SELL_LIMIT;
-    }
-  }
-
-  if (sl_price > 0)
-    request.sl = sl_price;
-  if (tp_price > 0)
-    request.tp = tp_price;
-
-  bool sent = OrderSend(request, result);
-
-  if (!sent)
-  {
-    PrintLog("Order Failed: " + IntegerToString(result.retcode) + " " + result.comment);
-    if (EnableTelegram)
-      SendTelegramFarsi("⚠️ *Order Error*\nCode: " + IntegerToString(result.retcode) + "\n" + result.comment);
-  }
-  else
-  {
-    PrintLog("Order Successful: Ticket #" + IntegerToString(result.order));
-  }
-
-  return sent;
-}
-
-//+------------------------------------------------------------------+
-//| Process Multiple TPs                                             |
-//+------------------------------------------------------------------+
-void ProcessMultipleTPs(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, bool executeAsMarket, double entryPrice, double sl_price,
-                        double currentPrice, bool isBuy, double lot, double minLot, int &successCount, double &totalVolume, bool &singleOrderMode, string signalID)
-{
-  double splitLot = NormalizeLotToSymbol(lot / sig.tp_count, symbol);
-
-  if (splitLot >= minLot)
-  {
-    PrintLog("Normal Mode: Creating " + IntegerToString(sig.tp_count) + " positions with volume " + DoubleToString(splitLot, 2) + " lots");
-
-    for (int t = 0; t < sig.tp_count; t++)
-    {
-      double tp_val = sig.tp_list[t];
-      if (tp_val <= 0)
-      {
-        double pt = SymbolInfoDouble(symbol, SYMBOL_POINT);
-        double pips = settings.default_tp_pips;
-
-        if (symType == SYMBOL_TYPE_GOLD)
-          pips = pips * 10.0;
-        else if (symType == SYMBOL_TYPE_DOW || symType == SYMBOL_TYPE_NASDAQ)
-          pips = pips;
-        else
-          pips = pips / 10.0;
-
-        double dist = pips * pt;
-        tp_val = isBuy ? currentPrice + dist : currentPrice - dist;
-      }
-
-      if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, tp_val, splitLot, signalID))
-      {
-        // Initialize risk data for this position
-        if (EnableRiskManagement)
-          InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, tp_val);
-
-        successCount++;
-        totalVolume += splitLot;
-      }
-    }
-  }
-  else
-  {
-    singleOrderMode = true;
-    PrintLog("Special Mode: Invalid split volume. Creating one position with full volume");
-
-    double firstTP = sig.tp_list[0];
-    if (firstTP <= 0)
-    {
-      firstTP = GetFirstTP(sig, symbol, symType, settings, currentPrice, isBuy);
-    }
-
-    if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, firstTP, lot, signalID))
-    {
-      // Initialize risk data for this position
-      if (EnableRiskManagement)
-        InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, firstTP);
-
-      successCount++;
-      totalVolume += lot;
-    }
-  }
-}
-
-//+------------------------------------------------------------------+
-//| Process Single TP                                                |
-//+------------------------------------------------------------------+
-void ProcessSingleTP(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, bool executeAsMarket, double entryPrice, double sl_price,
-                     double currentPrice, bool isBuy, double lot, int &successCount, double &totalVolume, string signalID)
-{
-  double tp_val = (sig.tp_count > 0) ? sig.tp_list[0] : 0;
-
-  if (tp_val <= 0)
-  {
-    tp_val = GetFirstTP(sig, symbol, symType, settings, currentPrice, isBuy);
-  }
-
-  if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, tp_val, lot, signalID))
-  {
-    // Initialize risk data for this position
-    if (EnableRiskManagement)
-      InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, tp_val);
-
-    successCount++;
-    totalVolume += lot;
-  }
-}
-
-// ================ TELEGRAM FUNCTIONS ================
-
-//+------------------------------------------------------------------+
-//| Check Telegram Settings                                          |
-//+------------------------------------------------------------------+
-bool CheckTelegramSettings()
-{
-  return (StringLen(TelegramBotToken) > 20 && StringLen(TelegramChatID) > 5);
-}
-
-//+------------------------------------------------------------------+
-//| Send Telegram Message                                            |
-//+------------------------------------------------------------------+
-bool SendTelegramMessage(string message)
-{
-  if (!EnableTelegram || StringLen(TelegramBotToken) < 10)
-    return false;
-
-  string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
-
-  string cleanMsg = message;
-  StringReplace(cleanMsg, "\"", "\\\"");
-  StringReplace(cleanMsg, "\n", "\\n");
-  StringReplace(cleanMsg, "\r", "");
-
-  string json = "{\"chat_id\": \"" + TelegramChatID + "\", \"text\": \"" + cleanMsg + "\"}";
-
-  char post[], res[];
-  StringToCharArray(json, post, 0, WHOLE_ARRAY, CP_UTF8);
-  if (ArraySize(post) > 0)
-    ArrayResize(post, ArraySize(post) - 1);
-
-  string headers = "Content-Type: application/json\r\n";
-  string res_headers;
-
-  int code = WebRequest("POST", url, headers, TelegramTimeout, post, res, res_headers);
-
-  if (code != 200)
-  {
-    PrintLog("Telegram Error: " + IntegerToString(code));
-    return false;
-  }
-  return true;
-}
-
-//+------------------------------------------------------------------+
-//| Send Telegram Farsi Message                                      |
-//+------------------------------------------------------------------+
-bool SendTelegramFarsi(string message)
-{
-  if (!EnableTelegram)
-    return false;
-
-  // اضافه کردن هدر و فوتر استاندارد
-  string formattedMsg = message;
-
-  // اگر پیام خیلی طولانی باشد، آن را تقسیم می‌کنیم
-  if (StringLen(message) > 4000)
-  {
-    PrintLog("Warning: Message too long for Telegram, truncating...");
-    formattedMsg = StringSubstr(message, 0, 3900) + "\n\n... [Message truncated due to length limit]";
-  }
-
-  string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
-
-  // فرار کردن کاراکترهای خاص برای JSON
-  string cleanMsg = formattedMsg;
-  StringReplace(cleanMsg, "\\", "\\\\");
-  StringReplace(cleanMsg, "\"", "\\\"");
-  StringReplace(cleanMsg, "\n", "\\n");
-  StringReplace(cleanMsg, "\r", "");
-  StringReplace(cleanMsg, "\t", "\\t");
-
-  string json = "{\"chat_id\": \"" + TelegramChatID + "\", " +
-                "\"text\": \"" + cleanMsg + "\", " +
-                "\"parse_mode\": \"Markdown\", " +
-                "\"disable_web_page_preview\": true, " +
-                "\"disable_notification\": false}";
-
-  char post[], res[];
-  StringToCharArray(json, post, 0, WHOLE_ARRAY, CP_UTF8);
-  if (ArraySize(post) > 0)
-    ArrayResize(post, ArraySize(post) - 1);
-
-  string headers = "Content-Type: application/json\r\n";
-  string res_headers;
-
-  int code = WebRequest("POST", url, headers, TelegramTimeout, post, res, res_headers);
-
-  if (code != 200)
-  {
-    PrintLog("Telegram Farsi Error: " + IntegerToString(code));
-    if (code == -1)
-      PrintLog("Check Internet connection and URL");
-    else if (code == 400)
-      PrintLog("Bad request - check bot token and chat ID");
-    else if (code == 401)
-      PrintLog("Unauthorized - invalid bot token");
-    else if (code == 404)
-      PrintLog("Not found - check bot token");
-    return false;
-  }
-  return true;
-}
-//+------------------------------------------------------------------+
-//| Send Execution Report                                            |
-//+------------------------------------------------------------------+
-void SendExecutionReport(string signalID, string symbol, string orderType, int totalOrders, int successfulOrders,
-                         double totalVolume, bool singleOrderMode, bool pendingMode, double pendingPrice, ENUM_SYMBOL_TYPE symType)
-{
-  string report = "📊 *Signal Execution Report*\n\n";
-
-  report += "🆔 Signal ID: `" + signalID + "`\n";
-  report += "🏷️ Symbol: " + symbol + "\n";
-  report += "📋 Type: " + GetSymbolTypeName(symType) + "\n";
-  report += "📈 Order Type: " + orderType + "\n";
-  report += "💰 Total Volume: " + DoubleToString(totalVolume, 2) + " lots\n";
-  report += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\n\n";
-
-  if (pendingMode)
-  {
-    SymbolSettings settings = GetSymbolSettings(symType);
-    report += "⚡ *Special Pending Mode*\n";
-    report += "🔸 Reason: Large price gap\n";
-    report += "🔸 Symbol Type: " + GetSymbolTypeName(symType) + "\n";
-    report += "🔸 Pending Price: " + DoubleToString(pendingPrice, 2) + "\n";
-    report += "🔸 Distance from SL: " + IntegerToString(settings.pending_distance_pips) + " pips\n";
-    report += "🔸 Max Slippage: " + IntegerToString(settings.max_slippage_pips) + " pips\n";
-    report += "✅ 1 pending order created\n";
-  }
-  else if (singleOrderMode)
-  {
-    report += "⚠️ *Special Execution Mode*\n";
-    report += "Due to small calculated volume, only 1 position with first target created.\n";
-  }
-  else
-  {
-    report += "✅ Positions created: " + IntegerToString(successfulOrders) + " of " + IntegerToString(totalOrders) + "\n";
-  }
-
-  if (successfulOrders > 0)
-  {
-    if (pendingMode)
-      report += "\n🎯 *Pending order successfully placed!*";
-    else if (successfulOrders == totalOrders)
-      report += "\n🎯 *Signal successfully executed!*";
-    else
-      report += "\n⚠️ *Signal partially executed*";
-  }
-  else
-  {
-    report += "\n❌ *Error executing signal*";
-  }
-
-  SendTelegramFarsi(report);
 }
 
 // ================ JSON PROCESSING FUNCTIONS ================
 
 //+------------------------------------------------------------------+
-//| Parse JSON Content - FIXED VERSION                              |
+//| Parse JSON Content                                              |
 //+------------------------------------------------------------------+
 bool ParseJsonContent(string content, SignalData &out)
 {
@@ -2948,24 +2318,22 @@ bool ParseJsonContent(string content, SignalData &out)
   PrintLog("Order Type: " + out.order_type);
   PrintLog("Signal ID: " + out.signal_id);
 
-  // Parse prices array - SIMPLIFIED VERSION
+  // Parse prices array
   int priceStart = StringFind(content, "\"prices\":[");
   if (priceStart >= 0)
   {
-    priceStart += 10; // Length of "\"prices\":["
+    priceStart += 10;
     int priceEnd = StringFind(content, "]", priceStart);
     if (priceEnd > priceStart)
     {
       string pricesStr = StringSubstr(content, priceStart, priceEnd - priceStart);
       PrintLog("Prices string: " + pricesStr);
 
-      // Simple parsing - find all numbers in quotes
       int pos = 0;
       int priceCount = 0;
 
       while (true)
       {
-        // Find next price value
         int numStart = StringFind(pricesStr, "\"", pos);
         if (numStart < 0)
           break;
@@ -2976,14 +2344,12 @@ bool ParseJsonContent(string content, SignalData &out)
 
         string numStr = StringSubstr(pricesStr, numStart + 1, numEnd - numStart - 1);
 
-        // Check if it's a number (not "price" text)
         if (StringLen(numStr) > 0 && numStr != "price")
         {
           double price = StringToDouble(numStr);
 
           if (price > 0)
           {
-            // Add to arrays
             ArrayResize(out.prices_list, priceCount + 1);
             ArrayResize(out.prices_isMarket, priceCount + 1);
             out.prices_list[priceCount] = price;
@@ -3004,40 +2370,37 @@ bool ParseJsonContent(string content, SignalData &out)
     }
   }
 
-  // Parse TP array - SIMPLIFIED VERSION
+  // Parse TP array
   int tpStart = StringFind(content, "\"tp\":[");
   if (tpStart >= 0)
   {
-    tpStart += 6; // Length of "\"tp\":["
+    tpStart += 6;
     int tpEnd = StringFind(content, "]", tpStart);
     if (tpEnd > tpStart)
     {
       string tpStr = StringSubstr(content, tpStart, tpEnd - tpStart);
       PrintLog("TP string: " + tpStr);
 
-      // Simple parsing - find all tp_item values
       int pos = 0;
       int tpCount = 0;
 
       while (true)
       {
-        // Find next tp_item value
         int itemStart = StringFind(tpStr, "\"tp_item\":\"", pos);
         if (itemStart < 0)
           break;
 
-        itemStart += 11; // Length of "\"tp_item\":\""
+        itemStart += 11;
         int itemEnd = StringFind(tpStr, "\"", itemStart);
         if (itemEnd < 0)
           break;
 
         string itemStr = StringSubstr(tpStr, itemStart, itemEnd - itemStart);
 
-        // Check if it's OPEN or a number
         if (StringCompare(itemStr, "OPEN", true) == 0)
         {
           ArrayResize(out.tp_list, tpCount + 1);
-          out.tp_list[tpCount] = 0; // 0 means OPEN
+          out.tp_list[tpCount] = 0;
           tpCount++;
           PrintLog("Found TP " + IntegerToString(tpCount) + ": OPEN");
         }
@@ -3061,33 +2424,31 @@ bool ParseJsonContent(string content, SignalData &out)
       out.tp_count = tpCount;
       PrintLog("Total TPs found: " + IntegerToString(out.tp_count));
 
-      // Check if OPEN is missing (only 3 TPs in your example)
       if (out.tp_count == 3)
       {
         PrintLog("Adding OPEN as 4th TP");
         ArrayResize(out.tp_list, 4);
-        out.tp_list[3] = 0; // OPEN
+        out.tp_list[3] = 0;
         out.tp_count = 4;
       }
     }
   }
 
-  // Parse SL array - SIMPLIFIED VERSION
+  // Parse SL array
   int slStart = StringFind(content, "\"sl\":[");
   if (slStart >= 0)
   {
-    slStart += 6; // Length of "\"sl\":["
+    slStart += 6;
     int slEnd = StringFind(content, "]", slStart);
     if (slEnd > slStart)
     {
       string slStr = StringSubstr(content, slStart, slEnd - slStart);
       PrintLog("SL string: " + slStr);
 
-      // Find sl_item value
       int itemStart = StringFind(slStr, "\"sl_item\":\"");
       if (itemStart >= 0)
       {
-        itemStart += 11; // Length of "\"sl_item\":\""
+        itemStart += 11;
         int itemEnd = StringFind(slStr, "\"", itemStart);
         if (itemEnd > itemStart)
         {
@@ -3126,7 +2487,6 @@ bool ParseJsonContent(string content, SignalData &out)
   PrintLog("TPs: " + IntegerToString(out.tp_count));
   PrintLog("SLs: " + IntegerToString(out.sl_count));
 
-  // Debug output
   for (int i = 0; i < out.prices_count; i++)
   {
     PrintLog("Price[" + IntegerToString(i) + "] = " + DoubleToString(out.prices_list[i], 2));
@@ -3141,8 +2501,9 @@ bool ParseJsonContent(string content, SignalData &out)
 
   return (out.prices_count > 0);
 }
+
 //+------------------------------------------------------------------+
-//| Extract Value from JSON string - SIMPLIFIED                     |
+//| Extract Value from JSON string                                  |
 //+------------------------------------------------------------------+
 string ExtractJsonValue(string json, string key)
 {
@@ -3150,7 +2511,6 @@ string ExtractJsonValue(string json, string key)
   int pos = StringFind(json, search);
   if (pos < 0)
   {
-    // Try without quotes around value
     search = "\"" + key + "\":";
     pos = StringFind(json, search);
     if (pos < 0)
@@ -3496,6 +2856,7 @@ double NormalizeLotToSymbol(double lot, string symbol)
 
   return NormalizeDouble(lot, 2);
 }
+
 //+------------------------------------------------------------------+
 //| Count Open Positions for Signal                                  |
 //+------------------------------------------------------------------+
@@ -3541,6 +2902,7 @@ int CountPendingOrdersForSignal(string signalID)
   }
   return count;
 }
+
 //+------------------------------------------------------------------+
 //| Calculate Position Risk in Money                                |
 //+------------------------------------------------------------------+
@@ -3554,7 +2916,6 @@ double CalculatePositionRiskMoney(ulong ticket)
   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
   double sl = PositionGetDouble(POSITION_SL);
 
-  // اگر SL تنظیم نشده، ریسک را صفر در نظر بگیر
   if (sl <= 0)
     return 0;
 
@@ -3566,14 +2927,12 @@ double CalculatePositionRiskMoney(ulong ticket)
 
   ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
-  // محاسبه فاصله SL از نقطه ورود
   double slDistance = 0;
   if (type == POSITION_TYPE_BUY)
-    slDistance = (openPrice - sl) / tickSize; // تعداد تیک‌ها
+    slDistance = (openPrice - sl) / tickSize;
   else
     slDistance = (sl - openPrice) / tickSize;
 
-  // محاسبه ریسک پولی
   double riskMoney = (slDistance * tickValue * volume);
 
   return MathAbs(riskMoney);
@@ -3592,7 +2951,6 @@ double CalculateTotalOpenPositionsRiskMoney()
     if (ticket <= 0)
       continue;
 
-    // فقط پوزیشن‌های این EA
     long magic = PositionGetInteger(POSITION_MAGIC);
     if (magic != ExpertMagicNumber)
       continue;
@@ -3625,7 +2983,7 @@ double CalculateTotalRiskPercentage()
 bool CheckGlobalRiskLimit(double signalRiskMoney)
 {
   if (!EnableGlobalRiskLimit)
-    return true; // اگر غیرفعال باشد، همیشه مجاز است
+    return true;
 
   double currentRiskMoney = CalculateTotalOpenPositionsRiskMoney();
   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -3672,8 +3030,10 @@ bool CheckGlobalRiskLimit(double signalRiskMoney)
   return true;
 }
 
+// ================ TP/SL ADJUSTMENT FUNCTIONS ================
+
 //+------------------------------------------------------------------+
-//| Get Adjustment Pips for Symbol Type                             |
+//| Get TP Adjustment Pips                                          |
 //+------------------------------------------------------------------+
 double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder, bool isPendingOrder)
 {
@@ -3689,6 +3049,8 @@ double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_BuyMarketTP_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_BuyMarketTP_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_BuyMarketTP_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_BuyMarketTP_AdjustPips;
       default:
@@ -3705,6 +3067,8 @@ double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_SellMarketTP_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_SellMarketTP_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_SellMarketTP_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_SellMarketTP_AdjustPips;
       default:
@@ -3724,6 +3088,8 @@ double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_BuyPendingTP_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_BuyPendingTP_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_BuyPendingTP_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_BuyPendingTP_AdjustPips;
       default:
@@ -3740,6 +3106,8 @@ double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_SellPendingTP_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_SellPendingTP_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_SellPendingTP_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_SellPendingTP_AdjustPips;
       default:
@@ -3752,7 +3120,7 @@ double GetTPAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
 }
 
 //+------------------------------------------------------------------+
-//| Get SL Adjustment Pips for Symbol Type                          |
+//| Get SL Adjustment Pips                                          |
 //+------------------------------------------------------------------+
 double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder, bool isPendingOrder)
 {
@@ -3768,6 +3136,8 @@ double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_BuyMarketSL_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_BuyMarketSL_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_BuyMarketSL_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_BuyMarketSL_AdjustPips;
       default:
@@ -3784,6 +3154,8 @@ double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_SellMarketSL_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_SellMarketSL_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_SellMarketSL_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_SellMarketSL_AdjustPips;
       default:
@@ -3803,6 +3175,8 @@ double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_BuyPendingSL_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_BuyPendingSL_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_BuyPendingSL_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_BuyPendingSL_AdjustPips;
       default:
@@ -3819,6 +3193,8 @@ double GetSLAdjustPips(ENUM_SYMBOL_TYPE symType, bool isBuy, bool isMarketOrder,
         return Dow_SellPendingSL_AdjustPips;
       case SYMBOL_TYPE_NASDAQ:
         return Nas_SellPendingSL_AdjustPips;
+      case SYMBOL_TYPE_BITCOIN:
+        return Btc_SellPendingSL_AdjustPips;
       case SYMBOL_TYPE_FOREX:
         return Forex_SellPendingSL_AdjustPips;
       default:
@@ -3844,28 +3220,25 @@ double AdjustPriceWithPips(double originalPrice, double adjustPips, string symbo
   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
   double multiplier = 1.0;
 
-  // Convert pips to points based on symbol type
-  if (symType == SYMBOL_TYPE_GOLD)
-    multiplier = 10.0; // For Gold: 0.01 = 1 pip
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    multiplier = 10.0;
   else if (symType == SYMBOL_TYPE_FOREX)
-    multiplier = 10.0; // For Forex: 0.0001 = 1 pip
-  // For indices: 1.0 = 1 pip
+    multiplier = 10.0;
 
   double adjustmentPoints = adjustPips * point * multiplier;
 
-  // Apply adjustment based on direction
   if (isBuy)
   {
-    if (isTP) // Buy TP - اضافه کردن به قیمت
+    if (isTP)
       return originalPrice + adjustmentPoints;
-    else // Buy SL - کم کردن از قیمت
+    else
       return originalPrice - adjustmentPoints;
   }
   else // Sell
   {
-    if (isTP) // Sell TP - کم کردن از قیمت
+    if (isTP)
       return originalPrice - adjustmentPoints;
-    else // Sell SL - اضافه کردن به قیمت
+    else
       return originalPrice + adjustmentPoints;
   }
 }
@@ -3922,6 +3295,138 @@ double AdjustSLPrice(double originalSL, string symbol, ENUM_SYMBOL_TYPE symType,
   return adjustedSL;
 }
 
+// ================ SIGNAL PROCESSING FUNCTIONS ================
+
+//+------------------------------------------------------------------+
+//| Main Processing Function                                         |
+//+------------------------------------------------------------------+
+void ProcessSignalFile()
+{
+  string file1 = SignalFileName + ".txt";
+  string file2 = SignalFileName;
+
+  int handle = INVALID_HANDLE;
+  handle = FileOpen(file1, FILE_READ | FILE_TXT | FILE_ANSI);
+  if (handle == INVALID_HANDLE)
+  {
+    handle = FileOpen(file2, FILE_READ | FILE_TXT | FILE_ANSI);
+    if (handle == INVALID_HANDLE)
+      return;
+  }
+
+  string content = "";
+  while (!FileIsEnding(handle))
+  {
+    string line = FileReadString(handle);
+    content = content + line;
+  }
+  FileClose(handle);
+
+  FileDelete(file1);
+  FileDelete(file2);
+
+  content = NormalizeContentLines(content);
+  content = StringTrimCustom(content);
+
+  if (StringLen(content) < 5)
+    return;
+
+  PrintLog("Read Content: " + StringSubstr(content, 0, MathMin(100, StringLen(content))) + "...");
+
+  SignalData sig;
+  if (!ParseJsonContent(content, sig))
+  {
+    PrintLog("Failed to parse JSON content.");
+    return;
+  }
+
+  PrintLog("Parsed Data Summary:");
+  PrintLog("  Prices count: " + IntegerToString(sig.prices_count));
+  PrintLog("  TP count: " + IntegerToString(sig.tp_count));
+  PrintLog("  SL count: " + IntegerToString(sig.sl_count));
+  if (sig.prices_count == 0)
+  {
+    PrintLog("ERROR: No prices parsed from JSON!");
+    return;
+  }
+
+  if (sig.tp_count == 0)
+  {
+    PrintLog("WARNING: No TPs found, adding default TP");
+    sig.tp_count = 1;
+    ArrayResize(sig.tp_list, 1);
+    sig.tp_list[0] = 0;
+  }
+  if (StringLen(sig.order_type) == 0)
+    return;
+
+  string symbol = sig.currency;
+  if (StringLen(symbol) == 0 || symbol == "null")
+    symbol = DefaultSymbol;
+  StringReplace(symbol, "\"", "");
+  StringReplace(symbol, "'", "");
+  symbol = StringTrimCustom(symbol);
+
+  if (!SymbolSelect(symbol, true))
+  {
+    PrintLog("Symbol " + symbol + " not found. Using default: " + DefaultSymbol);
+    symbol = DefaultSymbol;
+    SymbolSelect(symbol, true);
+  }
+
+  if (StringLen(sig.signal_id) == 0)
+  {
+    long currentTime = (long)TimeCurrent();
+    sig.signal_id = IntegerToString(currentTime);
+  }
+
+  PrintLog("Processing Signal ID: " + sig.signal_id + " on " + symbol);
+
+  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
+
+  // ارسال گزارش سیگنال ورودی به تلگرام
+  if (EnableTelegram)
+  {
+    SendSignalEntryReport(sig, symbol, symType);
+  }
+
+  SymbolSettings settings = GetSymbolSettings(symType);
+
+  double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+  double totalRiskMoney = accountBalance * RiskPercentPerSignal / 100.0;
+
+  // اضافه کردن چک ریسک کلی:
+  if (EnableGlobalRiskLimit)
+  {
+    if (!CheckGlobalRiskLimit(totalRiskMoney))
+    {
+      PrintLog("Signal execution CANCELLED due to global risk limit");
+      return;
+    }
+  }
+
+  if (sig.prices_count == 0)
+  {
+    ArrayResize(sig.prices_list, 1);
+    ArrayResize(sig.prices_isMarket, 1);
+    sig.prices_list[0] = 0.0;
+    sig.prices_isMarket[0] = true;
+    sig.prices_count = 1;
+  }
+
+  int successCount = 0;
+  double totalExecutedVolume = 0;
+
+  // Process signal with smart logic (نیاز به تعریف این تابع دارید)
+  ProcessSignalWithSmartLogic(sig, symbol, symType, settings, totalRiskMoney, sig.signal_id, successCount, totalExecutedVolume);
+
+  if (EnableTelegram && successCount > 0)
+  {
+    SendExecutionReport(sig.signal_id, symbol, sig.order_type, sig.tp_count, successCount,
+                        totalExecutedVolume, false, false, 0, symType);
+  }
+}
+
 //+------------------------------------------------------------------+
 //| Send Signal Entry Report to Telegram                            |
 //+------------------------------------------------------------------+
@@ -3939,11 +3444,10 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
 
   report += "\n📋 *Signal Details:*\n";
 
-  // قیمت‌ها
   if (sig.prices_count > 0)
   {
     report += "💰 *Entry Prices:*\n";
-    for (int i = 0; i < MathMin(sig.prices_count, 5); i++) // حداکثر 5 قیمت نشان دهیم
+    for (int i = 0; i < MathMin(sig.prices_count, 5); i++)
     {
       report += "  " + IntegerToString(i + 1) + ". " + DoubleToString(sig.prices_list[i], 5) + "\n";
     }
@@ -3951,11 +3455,10 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
       report += "  ... + " + IntegerToString(sig.prices_count - 5) + " more\n";
   }
 
-  // Take Profit ها
   if (sig.tp_count > 0)
   {
     report += "\n🎯 *Take Profit Levels:*\n";
-    for (int i = 0; i < MathMin(sig.tp_count, 4); i++) // حداکثر 4 TP
+    for (int i = 0; i < MathMin(sig.tp_count, 4); i++)
     {
       if (sig.tp_list[i] == 0)
         report += "  TP" + IntegerToString(i + 1) + ": OPEN\n";
@@ -3966,7 +3469,6 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
       report += "  ... + " + IntegerToString(sig.tp_count - 4) + " more\n";
   }
 
-  // Stop Loss
   if (sig.sl_count > 0 && sig.sl_list[0] > 0)
   {
     report += "\n🛡️ *Stop Loss:* " + DoubleToString(sig.sl_list[0], 5) + "\n";
@@ -3981,7 +3483,6 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
     report += "\n🛡️ *Stop Loss (Auto):* " + DoubleToString(defaultSL, 5) + "\n";
   }
 
-  // اطلاعات حساب
   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
   double riskMoney = balance * RiskPercentPerSignal / 100.0;
   double maxTotalRisk = balance * MaxTotalRiskPercent / 100.0;
@@ -3994,7 +3495,6 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
   report += "  Current Risk: $" + DoubleToString(currentRisk, 2) + " (" + DoubleToString(currentRiskPercent, 1) + "%)\n";
   report += "  Max Total Risk: $" + DoubleToString(maxTotalRisk, 2) + " (" + DoubleToString(MaxTotalRiskPercent, 1) + "%)\n";
 
-  // وضعیت ریسک
   if (EnableGlobalRiskLimit)
   {
     double potentialRisk = currentRisk + riskMoney;
@@ -4024,5 +3524,1281 @@ void SendSignalEntryReport(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symT
   report += "\n⏰ Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
 
   SendTelegramFarsi(report);
+}
+
+//+------------------------------------------------------------------+
+//| Close Pending Orders for Signal                                  |
+//+------------------------------------------------------------------+
+void ClosePendingOrdersForSignal(string signalID, string reason)
+{
+  if (StringLen(signalID) == 0)
+    return;
+
+  int deletedOrders = 0;
+
+  for (int i = OrdersTotal() - 1; i >= 0; i--)
+  {
+    ulong ticket = OrderGetTicket(i);
+    if (ticket <= 0)
+      continue;
+
+    long magic = OrderGetInteger(ORDER_MAGIC);
+    if (magic != ExpertMagicNumber)
+      continue;
+
+    string cmt = OrderGetString(ORDER_COMMENT);
+    if (StringFind(cmt, "SID:" + signalID) >= 0)
+    {
+      trade.OrderDelete(ticket);
+      deletedOrders++;
+      PrintLog("Deleted Pending Order " + IntegerToString((long)ticket) + " for Signal " + signalID + " - Reason: " + reason);
+    }
+  }
+
+  if (deletedOrders > 0 && EnableTelegram)
+  {
+    string message = "🗑️ *Pending Orders Closed*\n\n";
+    message += "#SID_" + signalID + "\n";
+    message += "🔸 Reason: " + reason + "\n";
+    message += "🔸 Orders Deleted: " + IntegerToString(deletedOrders) + "\n";
+    message += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+    SendTelegramFarsi(message);
+  }
+}
+
+//+------------------------------------------------------------------+
+//| Apply Global Risk-Free                                           |
+//+------------------------------------------------------------------+
+void ApplyGlobalRiskFree(ulong ticket, double entryPrice, int riskFreePips, int riskFreeDistance, bool isBuy, string symbol)
+{
+  if (!PositionSelectByTicket(ticket))
+    return;
+
+  double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+  double profit = PositionGetDouble(POSITION_PROFIT);
+
+  if (profit <= 0)
+    return;
+
+  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+  ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
+
+  double riskFreePoints = riskFreeDistance * point;
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    riskFreePoints = riskFreeDistance * point * 10.0;
+  else if (symType == SYMBOL_TYPE_FOREX)
+    riskFreePoints = riskFreeDistance * point * 10.0;
+
+  double newSL = 0;
+  if (isBuy)
+  {
+    newSL = entryPrice + riskFreePoints;
+  }
+  else
+  {
+    newSL = entryPrice - riskFreePoints;
+  }
+
+  trade.PositionModify(ticket, newSL, PositionGetDouble(POSITION_TP));
+
+  PrintLog("Global Risk-Free Activated: SL = " + DoubleToString(newSL, 5) +
+           " (Profit: " + DoubleToString(profit, 2) + ")");
+}
+
+//+------------------------------------------------------------------+
+//| Check Telegram Settings                                          |
+//+------------------------------------------------------------------+
+bool CheckTelegramSettings()
+{
+  return (StringLen(TelegramBotToken) > 20 && StringLen(TelegramChatID) > 5);
+}
+
+//+------------------------------------------------------------------+
+//| Send Execution Report                                            |
+//+------------------------------------------------------------------+
+void SendExecutionReport(string signalID, string symbol, string orderType, int totalOrders, int successfulOrders,
+                         double totalVolume, bool singleOrderMode, bool pendingMode, double pendingPrice, ENUM_SYMBOL_TYPE symType)
+{
+  string report = "📊 *Signal Execution Report*\n\n";
+
+  report += "🆔 Signal ID: `" + signalID + "`\n";
+  report += "🏷️ Symbol: " + symbol + "\n";
+  report += "📋 Type: " + GetSymbolTypeName(symType) + "\n";
+  report += "📈 Order Type: " + orderType + "\n";
+  report += "💰 Total Volume: " + DoubleToString(totalVolume, 2) + " lots\n";
+  report += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\n\n";
+
+  if (pendingMode)
+  {
+    SymbolSettings settings = GetSymbolSettings(symType);
+    report += "⚡ *Special Pending Mode*\n";
+    report += "🔸 Reason: Large price gap\n";
+    report += "🔸 Symbol Type: " + GetSymbolTypeName(symType) + "\n";
+    report += "🔸 Pending Price: " + DoubleToString(pendingPrice, 2) + "\n";
+    report += "🔸 Distance from SL: " + IntegerToString(settings.pending_distance_pips) + " pips\n";
+    report += "🔸 Max Slippage: " + IntegerToString(settings.max_slippage_pips) + " pips\n";
+    report += "✅ 1 pending order created\n";
+  }
+  else if (singleOrderMode)
+  {
+    report += "⚠️ *Special Execution Mode*\n";
+    report += "Due to small calculated volume, only 1 position with first target created.\n";
+  }
+  else
+  {
+    report += "✅ Positions created: " + IntegerToString(successfulOrders) + " of " + IntegerToString(totalOrders) + "\n";
+  }
+
+  if (successfulOrders > 0)
+  {
+    if (pendingMode)
+      report += "\n🎯 *Pending order successfully placed!*";
+    else if (successfulOrders == totalOrders)
+      report += "\n🎯 *Signal successfully executed!*";
+    else
+      report += "\n⚠️ *Signal partially executed*";
+  }
+  else
+  {
+    report += "\n❌ *Error executing signal*";
+  }
+
+  SendTelegramFarsi(report);
+}
+
+//+------------------------------------------------------------------+
+//| Send Signal Alert                                                |
+//+------------------------------------------------------------------+
+void SendSignalAlert(string signalID, string symbol, string message)
+{
+  if (!EnableTelegram)
+    return;
+
+  string fullMessage = "📢 *Signal Alert*\n\n";
+  fullMessage += "#SID_" + signalID + "\n";
+  fullMessage += "🏷️ Symbol: " + symbol + "\n";
+  fullMessage += message + "\n";
+  fullMessage += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+  SendTelegramFarsi(fullMessage);
+}
+
+//+------------------------------------------------------------------+
+//| Send Telegram Message                                            |
+//+------------------------------------------------------------------+
+bool SendTelegramMessage(string message)
+{
+  if (!EnableTelegram || StringLen(TelegramBotToken) < 10)
+    return false;
+
+  string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
+
+  string cleanMsg = message;
+  StringReplace(cleanMsg, "\"", "\\\"");
+  StringReplace(cleanMsg, "\n", "\\n");
+  StringReplace(cleanMsg, "\r", "");
+
+  string json = "{\"chat_id\": \"" + TelegramChatID + "\", \"text\": \"" + cleanMsg + "\"}";
+
+  char post[], res[];
+  StringToCharArray(json, post, 0, WHOLE_ARRAY, CP_UTF8);
+  if (ArraySize(post) > 0)
+    ArrayResize(post, ArraySize(post) - 1);
+
+  string headers = "Content-Type: application/json\r\n";
+  string res_headers;
+
+  int code = WebRequest("POST", url, headers, TelegramTimeout, post, res, res_headers);
+
+  if (code != 200)
+  {
+    PrintLog("Telegram Error: " + IntegerToString(code));
+    return false;
+  }
+  return true;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Default SL                                             |
+//+------------------------------------------------------------------+
+double CalculateDefaultSL(string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, double currentPrice, bool isBuy)
+{
+  double point = 0;
+  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
+  {
+    PrintLog("ERROR: Cannot get point value for " + symbol);
+    return 0;
+  }
+
+  double pips = settings.default_sl_pips;
+
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    pips = pips * 10.0;
+  else if (symType == SYMBOL_TYPE_FOREX)
+    pips = pips / 10.0;
+
+  double dist = pips * point;
+  return isBuy ? currentPrice - dist : currentPrice + dist;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Position Size                                          |
+//+------------------------------------------------------------------+
+double CalculatePositionSize(string symbol, double totalRiskMoney, double distSL)
+{
+  double lot = 0.01;
+  double ptVal = EstimatePipValuePerLot(symbol);
+  double ptSize = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+  if (distSL > 0 && ptVal > 0 && ptSize > 0)
+  {
+    double distPoints = distSL / ptSize;
+    lot = totalRiskMoney / (distPoints * ptVal);
+  }
+
+  return lot;
+}
+
+//+------------------------------------------------------------------+
+//| Get First TP                                                     |
+//+------------------------------------------------------------------+
+double GetFirstTP(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType,
+                  SymbolSettings &settings, double referencePrice, bool isBuy,
+                  string orderType = "", bool isMarketOrder = false, bool isPendingOrder = false)
+{
+  double firstTP = (sig.tp_count > 0) ? sig.tp_list[0] : 0;
+
+  if (firstTP > 0)
+  {
+    if (orderType != "" && (isMarketOrder || isPendingOrder))
+    {
+      firstTP = AdjustTPPrice(firstTP, symbol, symType, orderType, isMarketOrder, isPendingOrder);
+    }
+    return firstTP;
+  }
+
+  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+  double pips = settings.default_tp_pips;
+
+  if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+    pips = pips * 10.0;
+  else if (symType == SYMBOL_TYPE_FOREX)
+    pips = pips / 10.0;
+
+  double dist = pips * point;
+  firstTP = isBuy ? referencePrice + dist : referencePrice - dist;
+
+  if (orderType != "" && (isMarketOrder || isPendingOrder))
+  {
+    firstTP = AdjustTPPrice(firstTP, symbol, symType, orderType, isMarketOrder, isPendingOrder);
+  }
+
+  return firstTP;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Pending Price                                          |
+//+------------------------------------------------------------------+
+double CalculatePendingPrice(string orderType, double slPrice, double currentPrice, string symbol, int distancePips, ENUM_SYMBOL_TYPE symType, bool isBuy)
+{
+  double point = 0;
+  if (!SymbolInfoDouble(symbol, SYMBOL_POINT, point))
+  {
+    PrintLog("ERROR: Cannot get point value for " + symbol);
+    return 0;
+  }
+
+  double multiplier = 1.0;
+
+  switch (symType)
+  {
+  case SYMBOL_TYPE_GOLD:
+  case SYMBOL_TYPE_BITCOIN:
+    multiplier = 10.0;
+    break;
+  case SYMBOL_TYPE_FOREX:
+    multiplier = 10.0;
+    break;
+  default:
+    multiplier = 1.0;
+    break;
+  }
+
+  double distancePoints = distancePips * point * multiplier;
+
+  if (isBuy)
+  {
+    return slPrice + distancePoints;
+  }
+  else
+  {
+    return slPrice - distancePoints;
+  }
+}
+
+//+------------------------------------------------------------------+
+//| Send Order                                                       |
+//+------------------------------------------------------------------+
+bool SendOrder(string symbol, string order_type, bool isMarket, double entryPrice, double sl_price, double tp_price, double lot, string signalID)
+{
+  MqlTradeRequest request;
+  MqlTradeResult result;
+  ZeroMemory(request);
+  ZeroMemory(result);
+
+  int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+  double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+  if (tickSize == 0)
+    tickSize = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+  if (entryPrice > 0)
+    entryPrice = MathRound(entryPrice / tickSize) * tickSize;
+  if (sl_price > 0)
+    sl_price = MathRound(sl_price / tickSize) * tickSize;
+  if (tp_price > 0)
+    tp_price = MathRound(tp_price / tickSize) * tickSize;
+
+  ENUM_ORDER_TYPE type = (StringCompare(order_type, "sell", false) == 0) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+
+  request.symbol = symbol;
+  request.volume = lot;
+  request.deviation = 50;
+  request.magic = ExpertMagicNumber;
+  request.comment = "SID:" + signalID;
+  request.type_time = ORDER_TIME_GTC;
+  request.type_filling = ORDER_FILLING_FOK;
+
+  double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+  double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+
+  if (isMarket)
+  {
+    request.action = TRADE_ACTION_DEAL;
+    request.type = type;
+    request.price = (type == ORDER_TYPE_BUY) ? ask : bid;
+  }
+  else
+  {
+    request.action = TRADE_ACTION_PENDING;
+    request.price = entryPrice;
+
+    if (type == ORDER_TYPE_BUY)
+    {
+      if (entryPrice > ask)
+        request.type = ORDER_TYPE_BUY_STOP;
+      else
+        request.type = ORDER_TYPE_BUY_LIMIT;
+    }
+    else
+    {
+      if (entryPrice < bid)
+        request.type = ORDER_TYPE_SELL_STOP;
+      else
+        request.type = ORDER_TYPE_SELL_LIMIT;
+    }
+  }
+
+  if (sl_price > 0)
+    request.sl = sl_price;
+  if (tp_price > 0)
+    request.tp = tp_price;
+
+  bool sent = OrderSend(request, result);
+
+  if (!sent)
+  {
+    PrintLog("Order Failed: " + IntegerToString(result.retcode) + " " + result.comment);
+    if (EnableTelegram)
+      SendTelegramFarsi("⚠️ *Order Error*\nCode: " + IntegerToString(result.retcode) + "\n" + result.comment);
+  }
+  else
+  {
+    PrintLog("Order Successful: Ticket #" + IntegerToString(result.order));
+  }
+
+  return sent;
+}
+
+//+------------------------------------------------------------------+
+//| Process Multiple TPs                                             |
+//+------------------------------------------------------------------+
+void ProcessMultipleTPs(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, bool executeAsMarket, double entryPrice, double sl_price,
+                        double currentPrice, bool isBuy, double lot, double minLot, int &successCount, double &totalVolume, bool &singleOrderMode, string signalID)
+{
+  double splitLot = NormalizeLotToSymbol(lot / sig.tp_count, symbol);
+
+  if (splitLot >= minLot)
+  {
+    PrintLog("Normal Mode: Creating " + IntegerToString(sig.tp_count) + " positions with volume " + DoubleToString(splitLot, 2) + " lots");
+
+    for (int t = 0; t < sig.tp_count; t++)
+    {
+      double tp_val = sig.tp_list[t];
+      if (tp_val <= 0)
+      {
+        double pt = SymbolInfoDouble(symbol, SYMBOL_POINT);
+        double pips = settings.default_tp_pips;
+
+        if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+          pips = pips * 10.0;
+        else if (symType == SYMBOL_TYPE_DOW || symType == SYMBOL_TYPE_NASDAQ)
+          pips = pips;
+        else
+          pips = pips / 10.0;
+
+        double dist = pips * pt;
+        tp_val = isBuy ? currentPrice + dist : currentPrice - dist;
+      }
+
+      if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, tp_val, splitLot, signalID))
+      {
+        if (EnableRiskManagement)
+          InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, tp_val);
+
+        successCount++;
+        totalVolume += splitLot;
+      }
+    }
+  }
+  else
+  {
+    singleOrderMode = true;
+    PrintLog("Special Mode: Invalid split volume. Creating one position with full volume");
+
+    double firstTP = sig.tp_list[0];
+    if (firstTP <= 0)
+    {
+      firstTP = GetFirstTP(sig, symbol, symType, settings, currentPrice, isBuy);
+    }
+
+    if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, firstTP, lot, signalID))
+    {
+      if (EnableRiskManagement)
+        InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, firstTP);
+
+      successCount++;
+      totalVolume += lot;
+    }
+  }
+}
+
+//+------------------------------------------------------------------+
+//| Process Single TP                                                |
+//+------------------------------------------------------------------+
+void ProcessSingleTP(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings, bool executeAsMarket, double entryPrice, double sl_price,
+                     double currentPrice, bool isBuy, double lot, int &successCount, double &totalVolume, string signalID)
+{
+  double tp_val = (sig.tp_count > 0) ? sig.tp_list[0] : 0;
+
+  if (tp_val <= 0)
+  {
+    tp_val = GetFirstTP(sig, symbol, symType, settings, currentPrice, isBuy);
+  }
+
+  if (SendOrder(symbol, sig.order_type, executeAsMarket, entryPrice, sl_price, tp_val, lot, signalID))
+  {
+    if (EnableRiskManagement)
+      InitializeRiskDataForPosition(trade.ResultOrder(), signalID, entryPrice, sl_price, tp_val);
+
+    successCount++;
+    totalVolume += lot;
+  }
+}
+
+// ================ PROCESS SIGNAL WITH SMART LOGIC ================
+
+//+------------------------------------------------------------------+
+//| Process Signal with Smart Logic                                 |
+//+------------------------------------------------------------------+
+void ProcessSignalWithSmartLogic(SignalData &sig, string symbol, ENUM_SYMBOL_TYPE symType, SymbolSettings &settings,
+                                 double totalRiskMoney, string signalID, int &successCount, double &totalVolume)
+{
+  PrintLog("=== SIGNAL PROCESSING STARTED ===");
+  PrintLog("Signal ID: " + signalID + ", Symbol: " + symbol + ", Order Type: " + sig.order_type);
+
+  if (sig.prices_count == 0)
+  {
+    PrintLog("❌ ERROR: No prices found in signal!");
+    return;
+  }
+
+  if (sig.tp_count == 0)
+  {
+    PrintLog("⚠️ WARNING: No TPs found. Using default TP.");
+    sig.tp_count = 1;
+    ArrayResize(sig.tp_list, 1);
+    sig.tp_list[0] = 0;
+  }
+
+  PrintLog("Signal Details: " + IntegerToString(sig.prices_count) + " prices, " +
+           IntegerToString(sig.tp_count) + " TPs, " + IntegerToString(sig.sl_count) + " SLs");
+
+  string orderTypeLower = StringToLowerCustom(sig.order_type);
+
+  bool isBuyOrder = (StringFind(orderTypeLower, "buy") >= 0);
+  bool isSellOrder = (StringFind(orderTypeLower, "sell") >= 0);
+  bool isMarketOrder = false;
+  bool isLimitOrder = false;
+  bool isStopOrder = false;
+
+  if (isBuyOrder || isSellOrder)
+  {
+    if (StringFind(orderTypeLower, "limit") >= 0)
+      isLimitOrder = true;
+    else if (StringFind(orderTypeLower, "stop") >= 0)
+      isStopOrder = true;
+    else if (StringFind(orderTypeLower, "market") >= 0 ||
+             orderTypeLower == "buy" ||
+             orderTypeLower == "sell")
+      isMarketOrder = true;
+    else
+      isMarketOrder = true;
+  }
+  else
+  {
+    PrintLog("❌ ERROR: Invalid order type: " + sig.order_type);
+    return;
+  }
+
+  bool isBuy = isBuyOrder;
+
+  PrintLog("Order Analysis:");
+  PrintLog("  Direction: " + (isBuyOrder ? "BUY" : "SELL"));
+  PrintLog("  Type: " + (isMarketOrder ? "MARKET" : (isLimitOrder ? "LIMIT" : (isStopOrder ? "STOP" : "UNKNOWN"))));
+
+  double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+  double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+  double currentMarketPrice = isBuyOrder ? ask : bid;
+  double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+  PrintLog("Market Data:");
+  PrintLog("  Bid: " + DoubleToString(bid, 2));
+  PrintLog("  Ask: " + DoubleToString(ask, 2));
+  PrintLog("  Using: " + DoubleToString(currentMarketPrice, 2));
+  PrintLog("  Point: " + DoubleToString(point, 5));
+
+  double sl_price = 0;
+
+  if (sig.sl_count > 0 && sig.sl_list[0] > 0)
+  {
+    sl_price = sig.sl_list[0];
+    PrintLog("SL from signal: " + DoubleToString(sl_price, 2));
+  }
+  else
+  {
+    double pips = settings.default_sl_pips;
+
+    if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+      pips = pips * 10.0;
+    else if (symType == SYMBOL_TYPE_FOREX)
+      pips = pips / 10.0;
+
+    double dist = pips * point;
+    sl_price = isBuy ? currentMarketPrice - dist : currentMarketPrice + dist;
+    PrintLog("Default SL calculated: " + DoubleToString(sl_price, 2) +
+             " (" + DoubleToString(pips, 1) + " pips from price)");
+  }
+
+  double distSL = MathAbs(currentMarketPrice - sl_price);
+  double totalLot = CalculatePositionSize(symbol, totalRiskMoney, distSL);
+  totalLot = NormalizeLotToSymbol(totalLot, symbol);
+
+  if (totalLot > settings.max_lot)
+  {
+    PrintLog("⚠️ Lot size limited from " + DoubleToString(totalLot, 3) +
+             " to max: " + DoubleToString(settings.max_lot, 3));
+    totalLot = settings.max_lot;
+  }
+
+  double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+  if (minLot <= 0)
+    minLot = 0.01;
+
+  PrintLog("Position Sizing:");
+  PrintLog("  Risk Money: $" + DoubleToString(totalRiskMoney, 2));
+  PrintLog("  Total Lot: " + DoubleToString(totalLot, 3));
+  PrintLog("  Min Lot: " + DoubleToString(minLot, 3));
+  PrintLog("  SL Distance: " + DoubleToString(distSL, 5) + " (" +
+           DoubleToString(distSL / point, 1) + " points)");
+
+  int firstMarketIndex = -1;
+  int marketEntries = 0;
+  int pendingEntries = 0;
+
+  if (isMarketOrder)
+  {
+    PrintLog("Checking prices for market execution...");
+
+    for (int i = 0; i < sig.prices_count; i++)
+    {
+      double entryPrice = sig.prices_list[i];
+      if (entryPrice <= 0)
+        continue;
+
+      double gapPoints = MathAbs(entryPrice - currentMarketPrice) / point;
+
+      double gapPips = gapPoints;
+      if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+        gapPips = gapPoints / 10.0;
+      else if (symType == SYMBOL_TYPE_FOREX)
+        gapPips = gapPoints / 10.0;
+
+      PrintLog("Price[" + IntegerToString(i) + "]: " + DoubleToString(entryPrice, 2) +
+               " - Gap: " + DoubleToString(gapPips, 1) + " pips" +
+               " (Max: " + IntegerToString(settings.max_slippage_pips) + " pips)");
+
+      if (gapPips <= settings.max_slippage_pips)
+      {
+        if (firstMarketIndex == -1)
+        {
+          firstMarketIndex = i;
+          PrintLog("  ✓ First market price found at index " + IntegerToString(i));
+        }
+        marketEntries++;
+      }
+      else
+      {
+        pendingEntries++;
+        PrintLog("  ✗ Outside slippage range - will be pending");
+      }
+    }
+
+    PrintLog("Market Analysis: " + IntegerToString(marketEntries) + " market entries, " +
+             IntegerToString(pendingEntries) + " pending entries");
+  }
+  else
+  {
+    pendingEntries = sig.prices_count;
+    PrintLog("Limit/Stop order detected - all " + IntegerToString(pendingEntries) + " entries will be pending");
+  }
+
+  int totalExpectedPositions = 0;
+  string executionMode = "";
+
+  if (isMarketOrder && firstMarketIndex >= 0)
+  {
+    int marketPositions = sig.tp_count;
+    int pendingPositions = (sig.prices_count - 1) * sig.tp_count;
+
+    totalExpectedPositions = marketPositions + pendingPositions;
+
+    if (pendingPositions > 0)
+    {
+      executionMode = "Mixed: Market + Pending";
+      PrintLog("Execution Mode: " + executionMode);
+      PrintLog("  Market Positions: " + IntegerToString(marketPositions) +
+               " (first price × " + IntegerToString(sig.tp_count) + " TPs)");
+      PrintLog("  Pending Positions: " + IntegerToString(pendingPositions) +
+               " (" + IntegerToString(sig.prices_count - 1) + " prices × " +
+               IntegerToString(sig.tp_count) + " TPs)");
+    }
+    else
+    {
+      executionMode = "All Market";
+      PrintLog("Execution Mode: " + executionMode);
+      PrintLog("  All positions will be market orders");
+    }
+  }
+  else
+  {
+    totalExpectedPositions = sig.prices_count * sig.tp_count;
+
+    if (isLimitOrder)
+      executionMode = "All Pending (Limit Orders)";
+    else if (isStopOrder)
+      executionMode = "All Pending (Stop Orders)";
+    else
+      executionMode = "All Pending";
+
+    PrintLog("Execution Mode: " + executionMode);
+    PrintLog("  Total Positions: " + IntegerToString(sig.prices_count) +
+             " prices × " + IntegerToString(sig.tp_count) + " TPs = " +
+             IntegerToString(totalExpectedPositions));
+  }
+
+  if (totalExpectedPositions <= 0)
+  {
+    PrintLog("❌ ERROR: Cannot calculate position count!");
+    return;
+  }
+
+  double lotPerPosition = NormalizeLotToSymbol(totalLot / totalExpectedPositions, symbol);
+  bool validSplitVolume = (lotPerPosition >= minLot);
+
+  PrintLog("Lot Splitting:");
+  PrintLog("  Positions: " + IntegerToString(totalExpectedPositions));
+  PrintLog("  Lot/Position: " + DoubleToString(lotPerPosition, 3));
+  PrintLog("  Valid Split: " + (validSplitVolume ? "YES ✓" : "NO ✗"));
+
+  if (!validSplitVolume)
+  {
+    PrintLog("⚠️ ENTERING SPECIAL EXECUTION MODE");
+    PrintLog("Reason: Lot per position (" + DoubleToString(lotPerPosition, 3) +
+             ") < minimum (" + DoubleToString(minLot, 3) + ")");
+
+    double pendingPrice = 0;
+
+    if (sig.prices_count > 0 && sig.prices_list[0] > 0)
+    {
+      pendingPrice = sig.prices_list[0];
+      PrintLog("Using first signal price: " + DoubleToString(pendingPrice, 2));
+    }
+    else
+    {
+      double pips = settings.pending_distance_pips;
+      double multiplier = 1.0;
+
+      if (symType == SYMBOL_TYPE_GOLD || symType == SYMBOL_TYPE_BITCOIN)
+        multiplier = 10.0;
+      else if (symType == SYMBOL_TYPE_FOREX)
+        multiplier = 10.0;
+
+      double distance = pips * point * multiplier;
+      pendingPrice = isBuy ? sl_price + distance : sl_price - distance;
+      PrintLog("Calculated pending price: " + DoubleToString(pendingPrice, 2) +
+               " (" + IntegerToString(pips) + " pips from SL)");
+    }
+
+    double firstTP = GetFirstTP(sig, symbol, symType, settings, currentMarketPrice, isBuy,
+                                sig.order_type, false, true);
+
+    PrintLog("Creating single pending order:");
+    PrintLog("  Price: " + DoubleToString(pendingPrice, 2));
+    PrintLog("  SL: " + DoubleToString(sl_price, 2));
+    PrintLog("  TP: " + (firstTP > 0 ? DoubleToString(firstTP, 2) : "OPEN"));
+    PrintLog("  Lot: " + DoubleToString(totalLot, 3));
+
+    if (SendPendingOrder(symbol, sig.order_type, pendingPrice, sl_price, firstTP, totalLot, signalID))
+    {
+      successCount = 1;
+      totalVolume = totalLot;
+
+      if (EnableTelegram)
+      {
+        SendSignalAlert(signalID, symbol,
+                        "⚡ *Special Execution Mode*\n" +
+                            "Lot too small to split\n" +
+                            "Created 1 pending order\n" +
+                            "Price: " + DoubleToString(pendingPrice, 2) + "\n" +
+                            "Lot: " + DoubleToString(totalLot, 3));
+      }
+    }
+
+    return;
+  }
+
+  PrintLog("✅ PROCEEDING WITH NORMAL EXECUTION");
+
+  int marketOrdersCreated = 0;
+  int pendingOrdersCreated = 0;
+  int skippedOrders = 0;
+
+  for (int priceIndex = 0; priceIndex < sig.prices_count; priceIndex++)
+  {
+    double entryPrice = sig.prices_list[priceIndex];
+    if (entryPrice <= 0)
+    {
+      PrintLog("Skipping Price[" + IntegerToString(priceIndex) + "]: Invalid price");
+      skippedOrders++;
+      continue;
+    }
+
+    PrintLog("--- Processing Price[" + IntegerToString(priceIndex) + "]: " +
+             DoubleToString(entryPrice, 2) + " ---");
+
+    bool isThisMarketOrder = (isMarketOrder && priceIndex == firstMarketIndex);
+
+    for (int tpIndex = 0; tpIndex < sig.tp_count; tpIndex++)
+    {
+      double tp_val = sig.tp_list[tpIndex];
+
+      if (tp_val <= 0)
+      {
+        tp_val = GetFirstTP(sig, symbol, symType, settings, currentMarketPrice, isBuy,
+                            sig.order_type, isThisMarketOrder, !isThisMarketOrder);
+      }
+
+      string tpStr = (tp_val == 0) ? "OPEN" : DoubleToString(tp_val, 2);
+
+      if (isThisMarketOrder)
+      {
+        PrintLog("Market Order " + IntegerToString(tpIndex + 1) + "/" + IntegerToString(sig.tp_count) +
+                 " - TP: " + tpStr + ", Lot: " + DoubleToString(lotPerPosition, 3));
+
+        if (SendMarketOrder(symbol, sig.order_type, sl_price, tp_val, lotPerPosition, signalID))
+        {
+          successCount++;
+          totalVolume += lotPerPosition;
+          marketOrdersCreated++;
+          PrintLog("  ✓ Market order successful");
+        }
+        else
+        {
+          PrintLog("  ✗ Market order failed");
+          skippedOrders++;
+        }
+      }
+      else
+      {
+        string pendingType = "Pending";
+        if (isLimitOrder)
+          pendingType = "Limit";
+        if (isStopOrder)
+          pendingType = "Stop";
+
+        PrintLog(pendingType + " Order " + IntegerToString(tpIndex + 1) + "/" + IntegerToString(sig.tp_count) +
+                 " - Price: " + DoubleToString(entryPrice, 2) +
+                 ", TP: " + tpStr + ", Lot: " + DoubleToString(lotPerPosition, 3));
+
+        if (SendPendingOrder(symbol, sig.order_type, entryPrice, sl_price, tp_val, lotPerPosition, signalID))
+        {
+          successCount++;
+          totalVolume += lotPerPosition;
+          pendingOrdersCreated++;
+          PrintLog("  ✓ " + pendingType + " order successful");
+        }
+        else
+        {
+          PrintLog("  ✗ " + pendingType + " order failed");
+          skippedOrders++;
+        }
+      }
+    }
+  }
+
+  PrintLog("=========================================");
+  PrintLog("✅ EXECUTION COMPLETED");
+  PrintLog("=========================================");
+  PrintLog("Signal ID: " + signalID);
+  PrintLog("Symbol: " + symbol);
+  PrintLog("Order Type: " + sig.order_type);
+  PrintLog("Execution Mode: " + executionMode);
+  PrintLog("");
+  PrintLog("POSITION SUMMARY:");
+  PrintLog("  Expected: " + IntegerToString(totalExpectedPositions) + " positions");
+  PrintLog("  Created: " + IntegerToString(successCount) + " positions");
+  PrintLog("  Market Orders: " + IntegerToString(marketOrdersCreated));
+  PrintLog("  Pending Orders: " + IntegerToString(pendingOrdersCreated));
+  PrintLog("  Skipped/Failed: " + IntegerToString(skippedOrders));
+  PrintLog("");
+  PrintLog("VOLUME SUMMARY:");
+  PrintLog("  Total Volume: " + DoubleToString(totalVolume, 3) + " lots");
+  PrintLog("  Lot per Position: " + DoubleToString(lotPerPosition, 3) + " lots");
+  PrintLog("  Risk per Signal: $" + DoubleToString(totalRiskMoney, 2));
+  PrintLog("");
+  PrintLog("PRICE LEVELS:");
+  PrintLog("  Current Market: " + DoubleToString(currentMarketPrice, 2));
+  PrintLog("  Stop Loss: " + DoubleToString(sl_price, 2));
+  if (firstMarketIndex >= 0)
+    PrintLog("  First Market Price: " + DoubleToString(sig.prices_list[firstMarketIndex], 2) +
+             " (index " + IntegerToString(firstMarketIndex) + ")");
+  PrintLog("=========================================");
+
+  if (EnableTelegram && successCount > 0)
+  {
+    string telegramMsg = "📊 *Execution Report*\n\n";
+    telegramMsg += "🆔 Signal: `" + signalID + "`\n";
+    telegramMsg += "🏷️ Symbol: " + symbol + "\n";
+    telegramMsg += "📈 Type: " + sig.order_type + "\n";
+    telegramMsg += "🎯 Mode: " + executionMode + "\n\n";
+
+    telegramMsg += "✅ Positions: " + IntegerToString(successCount) + "/" +
+                   IntegerToString(totalExpectedPositions) + "\n";
+
+    if (marketOrdersCreated > 0)
+      telegramMsg += "🟢 Market: " + IntegerToString(marketOrdersCreated) + "\n";
+
+    if (pendingOrdersCreated > 0)
+      telegramMsg += "🟡 Pending: " + IntegerToString(pendingOrdersCreated) + "\n";
+
+    if (skippedOrders > 0)
+      telegramMsg += "🔴 Failed: " + IntegerToString(skippedOrders) + "\n";
+
+    telegramMsg += "\n💰 Volume: " + DoubleToString(totalVolume, 3) + " lots\n";
+    telegramMsg += "🔻 SL: " + DoubleToString(sl_price, 2) + "\n";
+
+    if (firstMarketIndex >= 0)
+      telegramMsg += "🎯 First Market: " + DoubleToString(sig.prices_list[firstMarketIndex], 2) + "\n";
+
+    telegramMsg += "\n⏰ " + TimeToString(TimeCurrent(), TIME_SECONDS);
+
+    SendSignalAlert(signalID, symbol, telegramMsg);
+  }
+}
+//+------------------------------------------------------------------+
+//| Get Symbol Settings                                             |
+//+------------------------------------------------------------------+
+SymbolSettings GetSymbolSettings(ENUM_SYMBOL_TYPE symType)
+{
+  SymbolSettings settings;
+
+  // Initialize all fields to avoid warnings
+  settings.max_lot = 0;
+  settings.default_sl_pips = 0;
+  settings.default_tp_pips = 0;
+  settings.max_slippage_pips = 0;
+  settings.pending_distance_pips = 0;
+  settings.stage1_pips = 0;
+  settings.stage1_close_percent = 0;
+  settings.stage2_pips = 0;
+  settings.stage2_close_percent = 0;
+  settings.stage2_breakeven_pips = 0;
+  settings.stage3_pips = 0;
+  settings.stage3_close_percent = 0;
+  settings.trailing_stop_pips = 0;
+  settings.global_riskfree_pips = 0;
+  settings.riskfree_distance = 0;
+  settings.close_pending_at_profit = 0;
+
+  switch (symType)
+  {
+  case SYMBOL_TYPE_GOLD:
+    settings.max_lot = gold_settings.max_lot;
+    settings.default_sl_pips = gold_settings.default_sl_pips;
+    settings.default_tp_pips = gold_settings.default_tp_pips;
+    settings.max_slippage_pips = gold_settings.max_slippage_pips;
+    settings.pending_distance_pips = gold_settings.pending_distance_pips;
+    settings.stage1_pips = gold_settings.stage1_pips;
+    settings.stage1_close_percent = gold_settings.stage1_close_percent;
+    settings.stage2_pips = gold_settings.stage2_pips;
+    settings.stage2_close_percent = gold_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = gold_settings.stage2_breakeven_pips;
+    settings.stage3_pips = gold_settings.stage3_pips;
+    settings.stage3_close_percent = gold_settings.stage3_close_percent;
+    settings.trailing_stop_pips = gold_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = gold_settings.global_riskfree_pips;
+    settings.riskfree_distance = gold_settings.riskfree_distance;
+    settings.close_pending_at_profit = gold_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_DOW:
+    settings.max_lot = dow_settings.max_lot;
+    settings.default_sl_pips = dow_settings.default_sl_pips;
+    settings.default_tp_pips = dow_settings.default_tp_pips;
+    settings.max_slippage_pips = dow_settings.max_slippage_pips;
+    settings.pending_distance_pips = dow_settings.pending_distance_pips;
+    settings.stage1_pips = dow_settings.stage1_pips;
+    settings.stage1_close_percent = dow_settings.stage1_close_percent;
+    settings.stage2_pips = dow_settings.stage2_pips;
+    settings.stage2_close_percent = dow_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = dow_settings.stage2_breakeven_pips;
+    settings.stage3_pips = dow_settings.stage3_pips;
+    settings.stage3_close_percent = dow_settings.stage3_close_percent;
+    settings.trailing_stop_pips = dow_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = dow_settings.global_riskfree_pips;
+    settings.riskfree_distance = dow_settings.riskfree_distance;
+    settings.close_pending_at_profit = dow_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_NASDAQ:
+    settings.max_lot = nas_settings.max_lot;
+    settings.default_sl_pips = nas_settings.default_sl_pips;
+    settings.default_tp_pips = nas_settings.default_tp_pips;
+    settings.max_slippage_pips = nas_settings.max_slippage_pips;
+    settings.pending_distance_pips = nas_settings.pending_distance_pips;
+    settings.stage1_pips = nas_settings.stage1_pips;
+    settings.stage1_close_percent = nas_settings.stage1_close_percent;
+    settings.stage2_pips = nas_settings.stage2_pips;
+    settings.stage2_close_percent = nas_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = nas_settings.stage2_breakeven_pips;
+    settings.stage3_pips = nas_settings.stage3_pips;
+    settings.stage3_close_percent = nas_settings.stage3_close_percent;
+    settings.trailing_stop_pips = nas_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = nas_settings.global_riskfree_pips;
+    settings.riskfree_distance = nas_settings.riskfree_distance;
+    settings.close_pending_at_profit = nas_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_BITCOIN:
+    settings.max_lot = btc_settings.max_lot;
+    settings.default_sl_pips = btc_settings.default_sl_pips;
+    settings.default_tp_pips = btc_settings.default_tp_pips;
+    settings.max_slippage_pips = btc_settings.max_slippage_pips;
+    settings.pending_distance_pips = btc_settings.pending_distance_pips;
+    settings.stage1_pips = btc_settings.stage1_pips;
+    settings.stage1_close_percent = btc_settings.stage1_close_percent;
+    settings.stage2_pips = btc_settings.stage2_pips;
+    settings.stage2_close_percent = btc_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = btc_settings.stage2_breakeven_pips;
+    settings.stage3_pips = btc_settings.stage3_pips;
+    settings.stage3_close_percent = btc_settings.stage3_close_percent;
+    settings.trailing_stop_pips = btc_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = btc_settings.global_riskfree_pips;
+    settings.riskfree_distance = btc_settings.riskfree_distance;
+    settings.close_pending_at_profit = btc_settings.close_pending_at_profit;
+    break;
+
+  case SYMBOL_TYPE_FOREX:
+  default:
+    settings.max_lot = forex_settings.max_lot;
+    settings.default_sl_pips = forex_settings.default_sl_pips;
+    settings.default_tp_pips = forex_settings.default_tp_pips;
+    settings.max_slippage_pips = forex_settings.max_slippage_pips;
+    settings.pending_distance_pips = forex_settings.pending_distance_pips;
+    settings.stage1_pips = forex_settings.stage1_pips;
+    settings.stage1_close_percent = forex_settings.stage1_close_percent;
+    settings.stage2_pips = forex_settings.stage2_pips;
+    settings.stage2_close_percent = forex_settings.stage2_close_percent;
+    settings.stage2_breakeven_pips = forex_settings.stage2_breakeven_pips;
+    settings.stage3_pips = forex_settings.stage3_pips;
+    settings.stage3_close_percent = forex_settings.stage3_close_percent;
+    settings.trailing_stop_pips = forex_settings.trailing_stop_pips;
+    settings.global_riskfree_pips = forex_settings.global_riskfree_pips;
+    settings.riskfree_distance = forex_settings.riskfree_distance;
+    settings.close_pending_at_profit = forex_settings.close_pending_at_profit;
+    break;
+  }
+
+  return settings;
+}
+
+// ================ تابع ایجاد داشبورد HTML ================
+void CreateHtmlDashboard()
+{
+  PrintLog("🔄 Updating HTML Dashboard...");
+
+  string html = "";
+
+  // شروع HTML
+  html += "<!DOCTYPE html>";
+  html += "<html lang='en' dir='ltr'>";
+  html += "<head>";
+  html += "<meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<meta http-equiv='refresh' content='10'>"; // رفرش اتوماتیک هر 10 ثانیه
+  html += "<title>📊 SignalExecutor Dashboard</title>";
+
+  // استایل‌ها
+  html += "<style>";
+  html += "* { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }";
+  html += "body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }";
+  html += ".container { max-width: 1400px; margin: 0 auto; }";
+  html += ".header { background: rgba(255, 255, 255, 0.95); padding: 25px; border-radius: 15px; margin-bottom: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }";
+  html += ".header h1 { color: #333; font-size: 28px; }";
+  html += ".header-info { display: flex; gap: 20px; }";
+  html += ".info-box { background: #f8f9fa; padding: 10px 20px; border-radius: 8px; text-align: center; }";
+  html += ".info-label { font-size: 12px; color: #666; margin-bottom: 5px; }";
+  html += ".info-value { font-size: 18px; font-weight: bold; color: #333; }";
+  html += ".profit { color: #10b981 !important; }";
+  html += ".loss { color: #ef4444 !important; }";
+  html += ".neutral { color: #6b7280 !important; }";
+  html += ".positions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }";
+  html += ".position-card { background: rgba(255, 255, 255, 0.95); border-radius: 15px; padding: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.08); transition: transform 0.3s ease; }";
+  html += ".position-card:hover { transform: translateY(-5px); }";
+  html += ".card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 2px solid #f1f5f9; }";
+  html += ".symbol { font-size: 22px; font-weight: bold; color: #1f2937; }";
+  html += ".position-type { padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; }";
+  html += ".buy { background: #d1fae5; color: #065f46; }";
+  html += ".sell { background: #fee2e2; color: #991b1b; }";
+  html += ".card-body { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }";
+  html += ".data-row { display: flex; flex-direction: column; }";
+  html += ".data-label { font-size: 12px; color: #6b7280; margin-bottom: 4px; }";
+  html += ".data-value { font-size: 16px; font-weight: 600; color: #1f2937; }";
+  html += ".stage-indicator { margin-top: 15px; padding: 10px; border-radius: 10px; text-align: center; font-weight: bold; }";
+  html += ".stage-0 { background: #f3f4f6; color: #6b7280; }";
+  html += ".stage-1 { background: #dbeafe; color: #1e40af; }";
+  html += ".stage-2 { background: #fef3c7; color: #92400e; }";
+  html += ".stage-3 { background: #dcfce7; color: #166534; }";
+  html += ".stage-4 { background: #fce7f3; color: #9d174d; }";
+  html += ".footer { text-align: center; margin-top: 30px; color: rgba(255, 255, 255, 0.8); font-size: 14px; }";
+  html += ".update-time { background: rgba(0, 0, 0, 0.2); padding: 10px 20px; border-radius: 20px; display: inline-block; }";
+  html += ".no-positions { text-align: center; padding: 40px; background: rgba(255, 255, 255, 0.95); border-radius: 15px; color: #6b7280; }";
+  html += "@media (max-width: 768px) { .positions-grid { grid-template-columns: 1fr; } .header { flex-direction: column; gap: 15px; } }";
+  html += "</style>";
+
+  html += "</head>";
+  html += "<body>";
+
+  html += "<div class='container'>";
+
+  // هدر
+  html += "<div class='header'>";
+  html += "<h1>📊 SignalExecutor Dashboard</h1>";
+  html += "<div class='header-info'>";
+
+  // اطلاعات حساب
+  double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+  double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+  double margin = AccountInfoDouble(ACCOUNT_MARGIN);
+  double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+
+  html += "<div class='info-box'>";
+  html += "<div class='info-label'>Balance</div>";
+  html += "<div class='info-value'>$" + DoubleToString(balance, 2) + "</div>";
+  html += "</div>";
+
+  html += "<div class='info-box'>";
+  html += "<div class='info-label'>Equity</div>";
+  html += "<div class='info-value " + (equity >= balance ? "profit" : "loss") + "'>$" + DoubleToString(equity, 2) + "</div>";
+  html += "</div>";
+
+  html += "<div class='info-box'>";
+  html += "<div class='info-label'>Positions</div>";
+  html += "<div class='info-value'>" + IntegerToString(PositionsTotal()) + "</div>";
+  html += "</div>";
+
+  html += "</div>"; // .header-info
+  html += "</div>"; // .header
+
+  // پوزیشن‌ها
+  int totalPositions = PositionsTotal();
+
+  if (totalPositions > 0)
+  {
+    html += "<div class='positions-grid'>";
+
+    for (int i = 0; i < totalPositions; i++)
+    {
+      ulong ticket = PositionGetTicket(i);
+      if (!PositionSelectByTicket(ticket))
+        continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      double tpPrice = PositionGetDouble(POSITION_TP);
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      long type = PositionGetInteger(POSITION_TYPE);
+      bool isBuy = (type == POSITION_TYPE_BUY);
+
+      // محاسبه پیپ سود
+      ENUM_SYMBOL_TYPE symType = GetSymbolType(symbol);
+      double profitPips = CalculatePipsProfit(entryPrice, currentPrice, isBuy, symbol, symType);
+
+      // استیج مدیریت ریسک
+      string stageText = "Not Tracked";
+      int stageLevel = 0;
+      string stageClass = "stage-0";
+
+      for (int j = 0; j < risk_data_count; j++)
+      {
+        if (risk_data_array[j].ticket == ticket)
+        {
+          stageLevel = risk_data_array[j].stage_completed;
+          if (risk_data_array[j].risk_free_active)
+          {
+            stageText = "Risk-Free Active";
+            stageClass = "stage-4";
+          }
+          else
+          {
+            stageText = "Stage " + IntegerToString(stageLevel) + " / 3";
+            stageClass = "stage-" + IntegerToString(stageLevel);
+          }
+          break;
+        }
+      }
+
+      // کارت پوزیشن
+      html += "<div class='position-card'>";
+
+      // هدر کارت
+      html += "<div class='card-header'>";
+      html += "<div class='symbol'>" + symbol + "</div>";
+      html += "<div class='position-type " + (isBuy ? "buy" : "sell") + "'>";
+      html += (isBuy ? "BUY" : "SELL") + " (" + DoubleToString(volume, 2) + " L)";
+      html += "</div>";
+      html += "</div>";
+
+      // بدنه کارت
+      html += "<div class='card-body'>";
+
+      // سطر 1
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Entry Price</div>";
+      html += "<div class='data-value'>" + DoubleToString(entryPrice, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)) + "</div>";
+      html += "</div>";
+
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Current Price</div>";
+      html += "<div class='data-value'>" + DoubleToString(currentPrice, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)) + "</div>";
+      html += "</div>";
+
+      // سطر 2
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Stop Loss</div>";
+      html += "<div class='data-value'>" + (slPrice > 0 ? DoubleToString(slPrice, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)) : "Not Set") + "</div>";
+      html += "</div>";
+
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Take Profit</div>";
+      html += "<div class='data-value'>" + (tpPrice > 0 ? DoubleToString(tpPrice, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS)) : "OPEN") + "</div>";
+      html += "</div>";
+
+      // سطر 3
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Profit/Loss ($)</div>";
+      html += "<div class='data-value " + (profit >= 0 ? "profit" : "loss") + "'>";
+      html += "$" + DoubleToString(profit, 2);
+      html += "</div>";
+      html += "</div>";
+
+      html += "<div class='data-row'>";
+      html += "<div class='data-label'>Profit/Loss (Pips)</div>";
+      html += "<div class='data-value " + (profitPips >= 0 ? "profit" : "loss") + "'>";
+      html += DoubleToString(profitPips, 1) + " pips";
+      html += "</div>";
+      html += "</div>";
+
+      html += "</div>"; // .card-body
+
+      // اندیکاتور استیج
+      html += "<div class='stage-indicator " + stageClass + "'>";
+      html += stageText;
+      html += "</div>";
+
+      html += "</div>"; // .position-card
+    }
+
+    html += "</div>"; // .positions-grid
+  }
+  else
+  {
+    html += "<div class='no-positions'>";
+    html += "<h2>📭 No Open Positions</h2>";
+    html += "<p>There are currently no open positions to display.</p>";
+    html += "</div>";
+  }
+
+  // فوتر
+  html += "<div class='footer'>";
+  html += "<div class='update-time'>";
+  html += "Last Updated: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+  html += " | Next Update: " + TimeToString(TimeCurrent() + 10, TIME_SECONDS);
+  html += " | SignalExecutor v1.90";
+  html += "</div>";
+  html += "</div>";
+
+  html += "</div>"; // .container
+  html += "</body>";
+  html += "</html>";
+
+  // ذخیره فایل
+  string filename = "dashboard.html";
+  int handle = FileOpen(filename, FILE_WRITE | FILE_TXT | FILE_ANSI);
+  if (handle != INVALID_HANDLE)
+  {
+    FileWrite(handle, html);
+    FileClose(handle);
+    PrintLog("✅ Dashboard updated: " + filename);
+  }
+  else
+  {
+    PrintLog("❌ Failed to create dashboard file");
+  }
+}
+
+// ================ تابع باز کردن داشبورد در مرورگر ================
+void OpenDashboardInBrowser()
+{
+  string filename = "dashboard.html";
+  if (FileIsExist(filename))
+  {
+    PrintLog("✅ Dashboard created: " + filename);
+    PrintLog("📁 Open manually in browser from: MQL5\\Files\\" + filename);
+  }
 }
 //+------------------------------------------------------------------+
