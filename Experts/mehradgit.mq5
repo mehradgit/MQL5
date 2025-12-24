@@ -768,10 +768,15 @@ double CalculatePipsProfit(double entryPrice, double currentPrice, bool isBuy, s
 }
 
 //+------------------------------------------------------------------+
-//| Apply Risk Management to Position (Optimized Version)           |
+//| Apply Risk Management to Position (Corrected Version)            |
 //+------------------------------------------------------------------+
 void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
 {
+  PrintLog("🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄");
+  PrintLog("🔄 APPLY RISK MANAGEMENT CALLED - Time: " + TimeToString(TimeCurrent(), TIME_SECONDS));
+  PrintLog("🔄 Ticket: " + (string)ticket);
+  PrintLog("🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄🔄");
+
   if (!PositionSelectByTicket(ticket))
     return;
 
@@ -881,17 +886,16 @@ void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
     risk_data_array[riskIndex].pending_closed = true;
   }
 
-  // ================ سیستم جدید: هر استیج مستقل چک شود ================
+  // ================ سیستم اصلاح شده: هر استیج مستقل چک شود ================
   bool anyStageProcessed = false;
 
-  // Stage 1: همیشه اول چک شود
-  if (profitPips >= riskSettings.stage1_pips && risk_data_array[riskIndex].stage_completed < 1)
+  // **اصلاح شده**: Stage 1 فقط زمانی اجرا شود که stage_completed == 0 باشد
+  if (profitPips >= riskSettings.stage1_pips && risk_data_array[riskIndex].stage_completed == 0)
   {
     PrintLog("📊 Stage 1 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
              ") >= " + IntegerToString(riskSettings.stage1_pips) +
-             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 1");
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") == 0");
 
-    // گزارش تلگرام برای شروع استیج 1
     if (EnableTelegram)
     {
       string msg = "🟢 *Stage 1 Triggered!*\n\n";
@@ -912,14 +916,13 @@ void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
     anyStageProcessed = true;
   }
 
-  // Stage 2: مستقل از Stage 1 چک شود
-  if (profitPips >= riskSettings.stage2_pips && risk_data_array[riskIndex].stage_completed < 2)
+  // **اصلاح شده**: Stage 2 فقط زمانی اجرا شود که stage_completed == 1 باشد
+  if (profitPips >= riskSettings.stage2_pips && risk_data_array[riskIndex].stage_completed == 1)
   {
     PrintLog("📊 Stage 2 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
              ") >= " + IntegerToString(riskSettings.stage2_pips) +
-             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 2");
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") == 1");
 
-    // گزارش تلگرام برای شروع استیج 2
     if (EnableTelegram)
     {
       string msg = "🟡 *Stage 2 Triggered!*\n\n";
@@ -941,14 +944,13 @@ void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
     anyStageProcessed = true;
   }
 
-  // Stage 3: مستقل از Stage‌های قبلی چک شود
-  if (profitPips >= riskSettings.stage3_pips && risk_data_array[riskIndex].stage_completed < 3)
+  // **اصلاح شده**: Stage 3 فقط زمانی اجرا شود که stage_completed == 2 باشد
+  if (profitPips >= riskSettings.stage3_pips && risk_data_array[riskIndex].stage_completed == 2)
   {
     PrintLog("📊 Stage 3 Conditions MET: Profit(" + DoubleToString(profitPips, 1) +
              ") >= " + IntegerToString(riskSettings.stage3_pips) +
-             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") < 3");
+             " && StageCompleted(" + IntegerToString(risk_data_array[riskIndex].stage_completed) + ") == 2");
 
-    // گزارش تلگرام برای شروع استیج 3
     if (EnableTelegram)
     {
       string msg = "🔴 *Stage 3 Triggered!*\n\n";
@@ -982,6 +984,16 @@ void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
              " | Met: " + (profitPips >= riskSettings.stage2_pips ? "YES" : "NO"));
     PrintLog("   Stage3 Target: " + IntegerToString(riskSettings.stage3_pips) +
              " | Met: " + (profitPips >= riskSettings.stage3_pips ? "YES" : "NO"));
+
+    // لاگ اضافی برای دیباگ
+    if (risk_data_array[riskIndex].stage_completed == 0)
+      PrintLog("   Status: Waiting for Stage 1 target (" + IntegerToString(riskSettings.stage1_pips) + " pips)");
+    else if (risk_data_array[riskIndex].stage_completed == 1)
+      PrintLog("   Status: Waiting for Stage 2 target (" + IntegerToString(riskSettings.stage2_pips) + " pips)");
+    else if (risk_data_array[riskIndex].stage_completed == 2)
+      PrintLog("   Status: Waiting for Stage 3 target (" + IntegerToString(riskSettings.stage3_pips) + " pips)");
+    else
+      PrintLog("   Status: All stages completed");
   }
 
   // Apply trailing stop if stage 3 is active
@@ -996,7 +1008,7 @@ void ApplyRiskManagement(ulong ticket, string symbol, ENUM_SYMBOL_TYPE symType)
 }
 
 //+------------------------------------------------------------------+
-//| Process Stage With Retry Logic (Enhanced with Telegram)         |
+//| Process Stage With Retry Logic (Fixed for All Stages)           |
 //+------------------------------------------------------------------+
 void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profitPips, double closePercent,
                            string reason, string symbol, bool isBuy, double currentPrice, double entryPrice,
@@ -1006,9 +1018,12 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
   if (riskIndex < 0 || riskIndex >= risk_data_count)
     return;
 
-  // اگر قبلاً کامل شده
+  // **اصلاح شده**: بررسی دقیق‌تر
   if (risk_data_array[riskIndex].stage_completed >= stage)
+  {
+    PrintLog("⚠️ Stage " + IntegerToString(stage) + " already completed or higher");
     return;
+  }
 
   SymbolSettings riskSettings = GetSymbolSettings(symType);
 
@@ -1021,17 +1036,11 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
   else if (stage == 3)
     maxAttempts = MaxRetryAttempts_Stage3;
 
-  // ================ لاگ اول ================
   PrintLog("🚀 Stage " + IntegerToString(stage) + " Process Started" +
            " | Profit: " + DoubleToString(profitPips, 1) + " pips" +
-           " | Target: " + IntegerToString(riskSettings.stage1_pips) + "/" +
-           IntegerToString(riskSettings.stage2_pips) + "/" +
-           IntegerToString(riskSettings.stage3_pips) + " pips" +
+           " | Current Stage: " + IntegerToString(risk_data_array[riskIndex].stage_completed) +
            " | Max Attempts: " + IntegerToString(maxAttempts) +
            " | Retry Delay: " + IntegerToString(RetryDelaySeconds) + "s");
-
-  // Update max attempts in data array
-  risk_data_array[riskIndex].stage_max_attempts[stage] = maxAttempts;
 
   // اگر در حال تلاش برای این stage نیستیم، شروع کن
   if (!risk_data_array[riskIndex].stage_in_progress[stage])
@@ -1042,7 +1051,7 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
 
     PrintLog("🚀 Starting Stage " + IntegerToString(stage) +
              " at " + DoubleToString(profitPips, 1) + " pips profit" +
-             " (Max attempts: " + IntegerToString(maxAttempts) + ")");
+             " (Current stage_completed: " + IntegerToString(risk_data_array[riskIndex].stage_completed) + ")");
 
     if (EnableTelegram)
     {
@@ -1054,6 +1063,7 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
   if (risk_data_array[riskIndex].stage_attempt_count[stage] > 0 &&
       (TimeCurrent() - risk_data_array[riskIndex].stage_start_time[stage]) < RetryDelaySeconds)
   {
+    PrintLog("⏳ Waiting for retry delay...");
     return;
   }
 
@@ -1066,44 +1076,17 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
            " | Profit: " + DoubleToString(profitPips, 1) + " pips" +
            " | Time: " + TimeToString(TimeCurrent(), TIME_SECONDS));
 
-  // گزارش تلگرام برای هر تلاش
-  if (EnableTelegram && attemptCount > 1)
-  {
-    string attemptMsg = "";
-    if (stage == 1)
-      attemptMsg = "🟢";
-    else if (stage == 2)
-      attemptMsg = "🟡";
-    else if (stage == 3)
-      attemptMsg = "🔴";
-
-    attemptMsg += " *Stage " + IntegerToString(stage) + " Retry*\n\n";
-    attemptMsg += "🏷️ Symbol: " + symbol + "\n";
-    attemptMsg += "🆔 Signal: `" + signalID + "`\n";
-    attemptMsg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
-    attemptMsg += "🔄 Attempt: " + IntegerToString(attemptCount) + "/" + IntegerToString(maxAttempts) + "\n";
-    attemptMsg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
-    attemptMsg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
-
-    SendTelegramFarsi(attemptMsg);
-  }
-
-  bool success = ClosePartialPosition(ticket, closePercent,
-                                      reason + " (Attempt " +
-                                          IntegerToString(attemptCount) +
-                                          "/" + IntegerToString(maxAttempts) + ")");
-
-  if (EnableTelegram)
-  {
-    SendStageAttemptAlert(symbol, signalID, stage, attemptCount,
-                          profitPips, success ? "ATTEMPTING" : "FAILED",
-                          maxAttempts);
-  }
+  // بستن جزئی با حفظ کامنت
+  bool success = ClosePartialPositionWithCommentPreservation(ticket, closePercent, reason,
+                                                             "Stage " + IntegerToString(stage) +
+                                                                 " (Attempt " + IntegerToString(attemptCount) +
+                                                                 "/" + IntegerToString(maxAttempts) + ")",
+                                                             signalID);
 
   if (success)
   {
     // موفق شدیم
-    risk_data_array[riskIndex].stage_completed = stage;
+    risk_data_array[riskIndex].stage_completed = stage; // **مهم: این خط مرحله را افزایش می‌دهد**
     risk_data_array[riskIndex].stage_in_progress[stage] = false;
     risk_data_array[riskIndex].stage_attempt_count[stage] = 0;
 
@@ -1192,7 +1175,7 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
         maxAttemptMsg += "📈 Profit: " + DoubleToString(profitPips, 1) + " pips\n";
         maxAttemptMsg += "🔄 Attempts: " + IntegerToString(maxAttempts) + "/" + IntegerToString(maxAttempts) + "\n";
         maxAttemptMsg += "⏱️ Delay: " + IntegerToString(RetryDelaySeconds) + "s\n";
-        maxAttemptMsg += "⚠️ Stage will be skipped\n";
+        maxAttemptMsg += "⚠️ Stage will be skipped - moving to next stage\n";
         maxAttemptMsg += "⏰ Time: " + TimeToString(TimeCurrent(), TIME_SECONDS);
 
         SendTelegramFarsi(maxAttemptMsg);
@@ -1202,29 +1185,35 @@ void ProcessStageWithRetry(ulong ticket, int riskIndex, int stage, double profit
       risk_data_array[riskIndex].stage_in_progress[stage] = false;
       risk_data_array[riskIndex].stage_attempt_count[stage] = 0;
 
+      // **اصلاح شده**: اگر به حداکثر تلاش رسید، مرحله را رد کن
+      risk_data_array[riskIndex].stage_completed = stage;
+
       return;
     }
   }
 }
+
 //+------------------------------------------------------------------+
-//| Close Partial Position with Success Check                        |
+//| Close Partial Position with Comment Preservation                |
 //+------------------------------------------------------------------+
-bool ClosePartialPosition(ulong ticket, double percent, string reason)
+bool ClosePartialPositionWithCommentPreservation(ulong ticket, double percent, string stageReason,
+                                                 string attemptDetails, string signalID)
 {
   if (!PositionSelectByTicket(ticket))
     return false;
 
-  double volume = PositionGetDouble(POSITION_VOLUME);
-  double closeVolume = volume * percent / 100.0;
-
-  // Normalize volume
+  // ذخیره تمام اطلاعات پوزیشن قبل از بستن
   string symbol = PositionGetString(POSITION_SYMBOL);
+  double volume = PositionGetDouble(POSITION_VOLUME);
+  double sl = PositionGetDouble(POSITION_SL);
+  double tp = PositionGetDouble(POSITION_TP);
+
+  double closeVolume = volume * percent / 100.0;
   closeVolume = NormalizeLotToSymbol(closeVolume, symbol);
 
   if (closeVolume <= 0)
     return false;
 
-  // Check minimum lot
   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
   if (closeVolume < minLot)
   {
@@ -1233,23 +1222,71 @@ bool ClosePartialPosition(ulong ticket, double percent, string reason)
     return false;
   }
 
-  // Attempt to close partial
+  // ساخت کامنت جدید که Signal ID را حفظ می‌کند
+  string newComment = "SID:" + signalID;
+
+  // اضافه کردن اطلاعات استیج به تاریخچه
+  if (StringFind(stageReason, "Stage 1") >= 0)
+    newComment += " [S1-" + IntegerToString((int)(percent)) + "%]";
+  else if (StringFind(stageReason, "Stage 2") >= 0)
+    newComment += " [S2-" + IntegerToString((int)(percent)) + "%]";
+  else if (StringFind(stageReason, "Stage 3") >= 0)
+    newComment += " [S3-" + IntegerToString((int)(percent)) + "%]";
+
+  // بستن جزئی
   bool success = trade.PositionClosePartial(ticket, closeVolume);
 
   if (success)
   {
     PrintLog("✅ Partial close successful: " + DoubleToString(closeVolume, 2) +
-             " lots (" + DoubleToString(percent, 1) + "%) - " + reason);
+             " lots (" + DoubleToString(percent, 1) + "%) - " + stageReason);
+
+    Sleep(100); // تاخیر برای پردازش تراکنش
+
+    // اگر پوزیشن هنوز وجود دارد، کامنت را به‌روزرسانی کن
+    if (PositionSelectByTicket(ticket))
+    {
+      MqlTradeRequest request;
+      MqlTradeResult result;
+      ZeroMemory(request);
+      ZeroMemory(result);
+
+      request.action = TRADE_ACTION_SLTP;
+      request.position = ticket;
+      request.symbol = symbol;
+      request.sl = sl;
+      request.tp = tp;
+      request.comment = newComment;
+      request.magic = ExpertMagicNumber;
+
+      ResetLastError();
+      if (OrderSend(request, result))
+      {
+        PrintLog("✅ Comment updated: " + newComment);
+      }
+      else
+      {
+        PrintLog("⚠️ Could not update comment: " + (string)result.retcode + " - " + result.comment);
+
+        // تلاش مجدد
+        Sleep(100);
+        ResetLastError();
+        if (OrderSend(request, result))
+        {
+          PrintLog("✅ Comment updated on second attempt");
+        }
+      }
+    }
   }
   else
   {
-    PrintLog("❌ Partial close FAILED: " + DoubleToString(closeVolume, 2) +
-             " lots - Error: " + IntegerToString(trade.ResultRetcode()) +
+    PrintLog("❌ Partial close FAILED: " + IntegerToString(trade.ResultRetcode()) +
              " - " + trade.ResultComment());
   }
 
   return success;
 }
+
 
 // ================ SYMBOL MANAGEMENT FUNCTIONS ================
 
